@@ -1,6 +1,6 @@
 # ui/app.py
 from __future__ import annotations
-import os, sys, threading, time, multiprocessing as mp
+import os, sys, threading, time
 from argparse import Namespace as NS
 from pathlib import Path
 import tkinter as tk
@@ -12,13 +12,10 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
 from src import main as app_main
-from src.utils.logging_setup import setup_logging
 from src.utils.io_excel import BASE_COLUMNS
 
-if sys.platform.startswith("win"):
-    mp.freeze_support()
-
 APP_NAME = "Blog Comment Tool"
+
 
 class App(tk.Tk):
     def __init__(self):
@@ -41,11 +38,10 @@ class App(tk.Tk):
         self.use_tpl_only = tk.BooleanVar(value=False)
 
         self.find_timeout = tk.DoubleVar(value=3.0)
-        self.post_workers = tk.IntVar(value=4)
+        self.post_workers = tk.IntVar(value=2)   # tránh mở quá nhiều instance
         self.post_chunk   = tk.IntVar(value=80)
 
         self._build_ui()
-        self.logger = setup_logging()
         self._append_log("Ready. Please choose an Excel file to start.")
         self._update_btns_state()
 
@@ -58,7 +54,7 @@ class App(tk.Tk):
         ttk.Label(frm, text="Input Excel:").grid(row=row, column=0, sticky="w")
         ttk.Entry(frm, textvariable=self.input_path, width=70).grid(row=row, column=1, sticky="ew", padx=6)
         ttk.Button(frm, text="Browse…", command=self._choose_input).grid(row=row, column=2, sticky="e")
-        ttk.Button(frm, text="Export template", command=self._export_template).grid(row=row, column=3, sticky="e", padx=(8,0))
+        ttk.Button(frm, text="Export template", command=self._export_template).grid(row=row, column=3, sticky="e", padx=(8, 0))
         row += 1
 
         ttk.Label(frm, text="Output Excel:").grid(row=row, column=0, sticky="w")
@@ -76,19 +72,19 @@ class App(tk.Tk):
 
         # Options
         opt = ttk.LabelFrame(frm, text="Options", padding=8)
-        opt.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(8,8))
+        opt.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(8, 8))
         ttk.Checkbutton(opt, text="Headless", variable=self.headless, command=self._update_env_hint).grid(row=0, column=0, sticky="w")
         ttk.Checkbutton(opt, text="Fast analyze", variable=self.fast_analyze).grid(row=0, column=1, sticky="w")
         ttk.Checkbutton(opt, text="Per-host analyze", variable=self.per_host).grid(row=0, column=2, sticky="w")
         ttk.Checkbutton(opt, text="Prefer template", variable=self.prefer_tpl).grid(row=1, column=0, sticky="w")
         ttk.Checkbutton(opt, text="Use template only", variable=self.use_tpl_only).grid(row=1, column=1, sticky="w")
 
-        ttk.Label(opt, text="Find timeout (s):").grid(row=2, column=0, sticky="w", pady=(6,0))
-        ttk.Entry(opt, textvariable=self.find_timeout, width=8).grid(row=2, column=1, sticky="w", pady=(6,0))
-        ttk.Label(opt, text="Workers:").grid(row=2, column=2, sticky="e", pady=(6,0))
-        ttk.Entry(opt, textvariable=self.post_workers, width=6).grid(row=2, column=3, sticky="w", pady=(6,0))
-        ttk.Label(opt, text="Chunk:").grid(row=2, column=4, sticky="e", pady=(6,0))
-        ttk.Entry(opt, textvariable=self.post_chunk, width=6).grid(row=2, column=5, sticky="w", pady=(6,0))
+        ttk.Label(opt, text="Find timeout (s):").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(opt, textvariable=self.find_timeout, width=8).grid(row=2, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(opt, text="Workers:").grid(row=2, column=2, sticky="e", pady=(6, 0))
+        ttk.Entry(opt, textvariable=self.post_workers, width=6).grid(row=2, column=3, sticky="w", pady=(6, 0))
+        ttk.Label(opt, text="Chunk:").grid(row=2, column=4, sticky="e", pady=(6, 0))
+        ttk.Entry(opt, textvariable=self.post_chunk, width=6).grid(row=2, column=5, sticky="w", pady=(6, 0))
 
         for c in range(6):
             opt.columnconfigure(c, weight=1)
@@ -109,7 +105,7 @@ class App(tk.Tk):
         # Logs
         row += 1
         logf = ttk.LabelFrame(frm, text="Logs", padding=6)
-        logf.grid(row=row, column=0, columnspan=4, sticky="nsew", pady=(8,0))
+        logf.grid(row=row, column=0, columnspan=4, sticky="nsew", pady=(8, 0))
         self.txt = tk.Text(logf, height=20)
         self.txt.pack(fill="both", expand=True)
         frm.rowconfigure(row, weight=1)
@@ -121,17 +117,21 @@ class App(tk.Tk):
         self.update()
 
     def _update_env_hint(self):
+        # chỗ này bạn có thể hiển thị gợi ý nếu cần
         pass
 
     def _update_btns_state(self):
         enabled = bool(self.input_path.get())
         for b in (self.btn_analyze, self.btn_scan, self.btn_post, self.btn_run_all):
-            if enabled: b.state(["!disabled"])
-            else: b.state(["disabled"])
+            if enabled:
+                b.state(["!disabled"])
+            else:
+                b.state(["disabled"])
 
     def _choose_input(self):
         fn = filedialog.askopenfilename(filetypes=[("Excel", "*.xlsx")])
-        if not fn: return
+        if not fn:
+            return
         # kiểm tra template
         try:
             import pandas as pd
@@ -155,16 +155,19 @@ class App(tk.Tk):
 
     def _choose_output(self):
         fn = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")])
-        if fn: self.output_path.set(fn)
+        if fn:
+            self.output_path.set(fn)
 
     def _choose_cache(self):
         fn = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")])
-        if fn: self.cache_path.set(fn)
+        if fn:
+            self.cache_path.set(fn)
 
     def _export_template(self):
         fn = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")],
                                           initialfile="comments_template.xlsx")
-        if not fn: return
+        if not fn:
+            return
         import pandas as pd
         df = pd.DataFrame(columns=BASE_COLUMNS)
         try:
@@ -182,6 +185,8 @@ class App(tk.Tk):
         # truyền cấu hình nhanh cho core (src.config đọc từ env)
         os.environ["HEADLESS"] = "true" if self.headless.get() else "false"
         os.environ["FIND_TIMEOUT"] = str(self.find_timeout.get())
+        # 👉 ép backend dùng THREADS khi chạy từ UI để không spawn thêm nhiều UI
+        os.environ["USE_THREADS"] = "true"
 
     # === pipeline handlers ===
     def _run_analyze(self): self._thread(self._do_analyze)
@@ -195,9 +200,12 @@ class App(tk.Tk):
             return
         try:
             self._apply_env()
-            inp, out = self.input_path.get(), self.output_path.get() or (str(Path(inp).with_name(f"{Path(inp).stem}_out_{time.strftime('%Y%m%d-%H%M')}.xlsx")))
+            inp = self.input_path.get()
+            out = self.output_path.get() or (str(Path(inp).with_name(f"{Path(inp).stem}_out_{time.strftime('%Y%m%d-%H%M')}.xlsx")))
             self.output_path.set(out)
             self._append_log(f"Analyze -> {out}")
+
+            # fast analyze tuỳ chọn
             if self.fast_analyze.get():
                 ns = NS(input=inp, output=out, fast=True, workers=32, connect_timeout=1.2, read_timeout=2.0, per_host=self.per_host.get())
             else:
@@ -249,10 +257,12 @@ class App(tk.Tk):
         self._do_scan()
         self._do_post()
 
+
 def main():
     Path(ROOT / "logs").mkdir(parents=True, exist_ok=True)
     app = App()
     app.mainloop()
+
 
 if __name__ == "__main__":
     main()

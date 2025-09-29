@@ -1,4 +1,4 @@
-name: ci: build win+mac
+name: ci: build Windows + macOS
 
 on:
   push:
@@ -7,63 +7,94 @@ on:
 
 jobs:
   build:
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONUTF8: "1"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      - name: Install deps
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
         run: |
           python -m pip install -U pip wheel setuptools
-          pip install -r requirements.txt || pip install ^
-            numpy==1.26.4 pandas==2.2.2 openpyxl ^
-            selenium webdriver-manager loguru typer requests ^
+          pip install -r requirements.txt || pip install \
+            numpy==1.26.4 pandas==2.2.2 openpyxl \
+            selenium webdriver-manager loguru typer requests \
             pyinstaller==6.10.0 pyinstaller-hooks-contrib
         shell: bash
 
-      - name: PyInstaller build
+      # Kiểm tra import mấy lib “hay lỗi” trước khi build
+      - name: Smoke test imports
         run: |
-          rm -rf build dist *.spec 2>/dev/null || true
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            NAME="BlogCommentTool-win"
-          else
-            NAME="BlogCommentTool-mac"
-          fi
+          python - <<'PY'
+          import sys, platform
+          print("Python:", sys.version, "| OS:", platform.platform())
+          import tkinter, _tkinter, numpy, pandas, loguru
+          print("Tk:", tkinter.TkVersion, "| numpy:", numpy.__version__, "| pandas:", pandas.__version__)
+          PY
+        shell: bash
+
+      # ===== macOS build =====
+      - name: Build macOS binary
+        if: runner.os == 'macOS'
+        run: |
+          rm -rf build dist *.spec || true
           pyinstaller --noconfirm --onefile --windowed ui/app.py \
-            --name "$NAME" \
+            --name BlogCommentTool-mac \
             --paths . \
             --add-data "src:src" \
             --add-data "data:data" \
             --hidden-import loguru \
             --hidden-import tkinter --hidden-import _tkinter \
             --collect-submodules tkinter --collect-all loguru \
-            --collect-submodules numpy --collect-data numpy \
-            --collect-submodules pandas --collect-data pandas \
+            --collect-submodules numpy   --collect-data numpy \
+            --collect-submodules pandas  --collect-data pandas \
             --clean --log-level WARN
+          cd dist && /usr/bin/zip -r BlogCommentTool-mac.zip BlogCommentTool-mac
         shell: bash
 
-      - name: Package artifact (zip)
+      # ===== Windows build =====
+      - name: Build Windows binary
+        if: runner.os == 'Windows'
         run: |
-          cd dist
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            7z a BlogCommentTool-win.zip BlogCommentTool-win.exe
-          else
-            /usr/bin/zip -r BlogCommentTool-mac.zip BlogCommentTool-mac
-          fi
-        shell: bash
+          Remove-Item -Recurse -Force build, dist, *.spec -ErrorAction SilentlyContinue
+          pyinstaller --noconfirm --onefile --windowed ui/app.py `
+            --name BlogCommentTool-win `
+            --paths . `
+            --add-data "src;src" `
+            --add-data "data;data" `
+            --hidden-import loguru `
+            --hidden-import tkinter --hidden-import _tkinter `
+            --collect-submodules tkinter --collect-all loguru `
+            --collect-submodules numpy   --collect-data numpy `
+            --collect-submodules pandas  --collect-data pandas `
+            --clean --log-level WARN
+          Compress-Archive -Path dist\BlogCommentTool-win.exe -DestinationPath dist\BlogCommentTool-win.zip -Force
+        shell: pwsh
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-            name: ${{ runner.os }}-build
-            path: dist/*.zip
-            if-no-files-found: error
+          name: ${{ runner.os }}-build
+          path: |
+            dist/BlogCommentTool-*.zip
+          if-no-files-found: error

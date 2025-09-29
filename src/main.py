@@ -1,6 +1,6 @@
 # src/main.py
 from __future__ import annotations
-import argparse, os, time, multiprocessing as mp
+import argparse, os, sys, time, multiprocessing as mp
 from pathlib import Path
 from loguru import logger
 
@@ -60,7 +60,6 @@ def _row_to_selectors(row) -> dict:
 
 
 def _write_selectors_to_row(df, i, sel: dict, scope: str = "domain"):
-    # Các cột template sẽ auto tạo nếu chưa có
     df.at[i, "tpl_ta_sel"] = sel.get("ta_sel") or ""
     df.at[i, "tpl_name_sel"] = sel.get("name_sel") or ""
     df.at[i, "tpl_email_sel"] = sel.get("email_sel") or ""
@@ -71,7 +70,7 @@ def _write_selectors_to_row(df, i, sel: dict, scope: str = "domain"):
 
 
 def _ensure_object_cols(df, cols: list[str]):
-    """Đảm bảo các cột là dtype=object để ghi string không cảnh báo."""
+    """Ép cột sang dtype=object để ghi string không cảnh báo."""
     import pandas as pd
     for c in cols:
         if c not in df.columns:
@@ -79,6 +78,20 @@ def _ensure_object_cols(df, cols: list[str]):
         else:
             if str(df[c].dtype) != "object":
                 df[c] = df[c].astype("object")
+
+
+def _should_use_threads() -> bool:
+    """
+    Dùng thread pool thay cho multiprocessing khi:
+    - Biến môi trường USE_THREADS=true, hoặc
+    - Chạy ở bản đóng gói (sys.frozen) để tránh spawn nhiều UI.
+    """
+    env = os.environ.get("USE_THREADS", "").lower()
+    if env in ("1", "true", "yes"):
+        return True
+    if env in ("0", "false", "no"):
+        return False
+    return getattr(sys, "frozen", False)
 
 
 # =========================
@@ -126,7 +139,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
             if not url:
                 continue
 
-            # nếu đã có template trong excel thì bỏ qua scan
+            # có sẵn template trong excel -> bỏ qua scan
             if any(_row_to_selectors(row).values()):
                 continue
 
@@ -163,7 +176,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
 
 
 # =========================
-# worker for parallel posting
+# worker for posting
 # =========================
 def _worker_post(tasklist: list, options: dict) -> list[tuple[int, str, str]]:
     from .commenter import post_comment
@@ -209,14 +222,14 @@ def _worker_post(tasklist: list, options: dict) -> list[tuple[int, str, str]]:
     return out
 
 
-# Hàm entry top-level cho multiprocessing (tránh lambda để picklable trên Windows)
 def _worker_entry(args):
+    """Top-level entry để picklable khi dùng multiprocessing."""
     chunk, options = args
     return _worker_post(chunk, options)
 
 
 # =========================
-# post (song song)
+# post (song song: threads khi GUI, processes khi CLI)
 # =========================
 def cmd_post(args: argparse.Namespace) -> None:
     inp = args.input or OUTPUT_XLSX
@@ -276,22 +289,34 @@ def cmd_post(args: argparse.Namespace) -> None:
             df.at[i, "status"] = st
             df.at[i, "notes"] = note
     else:
-        chunks = [tasks[x : x + chunk_size] for x in range(0, len(tasks), chunk_size)]
+        chunks = [tasks[x: x + chunk_size] for x in range(0, len(tasks), chunk_size)]
         options = {"headless": HEADLESS, "pause_min": PAUSE_MIN, "pause_max": PAUSE_MAX}
-        ctx = mp.get_context("spawn")
-        with ctx.Pool(processes=workers) as pool:
-            for res in pool.imap_unordered(_worker_entry, [(c, options) for c in chunks]):
-                for i, st, note in res:
-                    df.at[i, "status"] = st
-                    df.at[i, "notes"] = note
-                save_rows(df, inp)  # lưu sau mỗi chunk
+
+        if _should_use_threads():
+            # 👉 dùng threads khi chạy GUI/đóng gói để không spawn thêm UI
+            from multiprocessing.dummy import Pool as ThreadPool
+            with ThreadPool(workers) as pool:
+                for res in pool.imap_unordered(_worker_entry, [(c, options) for c in chunks]):
+                    for i, st, note in res:
+                        df.at[i, "status"] = st
+                        df.at[i, "notes"] = note
+                    save_rows(df, inp)
+        else:
+            # 👉 dùng processes khi CLI/dev
+            ctx = mp.get_context("spawn")
+            with ctx.Pool(processes=workers) as pool:
+                for res in pool.imap_unordered(_worker_entry, [(c, options) for c in chunks]):
+                    for i, st, note in res:
+                        df.at[i, "status"] = st
+                        df.at[i, "notes"] = note
+                    save_rows(df, inp)
 
     save_rows(df, inp)
     logger.info(f"Posting done -> {inp} (processed {len(tasks)} rows)")
 
 
 # =========================
-# run all (analyze -> scan -> post)
+# run all
 # =========================
 def cmd_run(args: argparse.Namespace) -> None:
     a = argparse.Namespace(input=args.input or INPUT_XLSX, output=args.output or OUTPUT_XLSX)
@@ -324,7 +349,6 @@ def cmd_run(args: argparse.Namespace) -> None:
     cmd_post(p)
 
 
-# API “1 phát” cho GUI (không bắt buộc, nhưng tiện gọi)
 def run_pipeline_file(input_path: str) -> str:
     """Chạy phân tích -> scan -> post cho 1 file Excel. Trả về output path."""
     stem, _ = os.path.splitext(input_path)
