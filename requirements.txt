@@ -1,0 +1,8 @@
+pandas
+openpyxl
+selenium
+webdriver-manager
+requests
+loguru
+python-dotenv
+streamlit
