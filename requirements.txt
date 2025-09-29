@@ -1,8 +1,7 @@
-pandas
-openpyxl
 selenium
 webdriver-manager
-requests
+pandas
+openpyxl
 loguru
-python-dotenv
-streamlit
+typer
+requests
