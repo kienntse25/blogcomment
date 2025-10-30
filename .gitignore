@@ -18,6 +18,9 @@ build/
 dist/
 *.spec
 
+# Local launch scripts
+Run-*.command
+
 # Logs
 logs/
 run.log
