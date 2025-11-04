@@ -1,0 +1,14 @@
+[Unit]
+Description=Blog Comment Tool Celery Worker
+After=network-online.target redis-server.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/blog-comment-tool
+EnvironmentFile=/home/ubuntu/blog-comment-tool/.env
+ExecStart=/home/ubuntu/blog-comment-tool/.venv/bin/celery -A src.tasks worker --loglevel=info
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

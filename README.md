@@ -12,12 +12,25 @@ Tool tự động gửi bình luận hàng loạt cho mục đích SEO an toàn.
 ### Cài đặt nhanh
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-brew services start redis  # hoặc tự khởi chạy redis-server
-celery -A src.tasks worker --loglevel=info
-python push_jobs_from_excel.py --input data/comments.xlsx --output data/comments_out.xlsx
+make venv                      # tạo và cài đặt virtualenv
+source scripts/setup_env.sh    # nạp biến môi trường mặc định
+make worker                    # chạy Celery worker (giữ tab này)
+make pipeline                  # tab khác: chạy pipeline từ Excel
+```
+
+Các script tiện ích:
+
+- `scripts/run.sh`: kích hoạt venv và chạy worker (tương đương `make worker`).
+- `scripts/run_pipeline.sh`: chạy pipeline, nhận thêm tham số CLI nếu cần (vd. `--sync-one`).
+- `scripts/health_check.py`: kiểm tra trạng thái `redis-server` và `celery` (dùng cho cron/timer).
+- `scripts/backup.sh`: nén `data/registry.sqlite3` + `logs/` vào thư mục backup (`$BLOG_COMMENT_BACKUP_DIR` hoặc `~/backups/blog-comment-tool`).
+
+Triển khai service nền: mẫu systemd nằm tại `deploy/celery.service`. Sao chép file này lên VPS, chỉnh đường dẫn cho phù hợp rồi kích hoạt bằng:
+
+```bash
+sudo cp deploy/celery.service /etc/systemd/system/celery.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now celery
 ```
 
 ### Biến môi trường hữu ích
