@@ -9,3 +9,4 @@ export CELERY_RESULT_BACKEND=redis://localhost:6379/0
 # export PROXY_URL="http://user:pass@host:port"
 # export PROXY_LIST="http://proxy1:port,http://proxy2:port"
 # export PROXY_FILE="data/proxies.txt"
+# export PROXY_XLSX="data/proxies.xlsx"

@@ -18,6 +18,7 @@ from .config import (
     PROXY_URL,
     PROXY_LIST,
     PROXY_FILE,
+    PROXY_XLSX,
 )
 from .registry import was_seen, mark_seen
 from . import commenter
@@ -27,6 +28,8 @@ log = logging.getLogger("worker_lib")
 
 _FILE_PROXY_CACHE: list[str] | None = None
 _FILE_PROXY_MTIME: float | None = None
+_XLSX_PROXY_CACHE: list[str] | None = None
+_XLSX_PROXY_MTIME: float | None = None
 
 
 def _load_proxies_from_file() -> list[str]:
@@ -60,10 +63,70 @@ def _load_proxies_from_file() -> list[str]:
     return proxies
 
 
+def _load_proxies_from_xlsx() -> list[str]:
+    global _XLSX_PROXY_CACHE, _XLSX_PROXY_MTIME
+    if not PROXY_XLSX:
+        return []
+    try:
+        st = os.stat(PROXY_XLSX)
+    except FileNotFoundError:
+        _XLSX_PROXY_CACHE = None
+        _XLSX_PROXY_MTIME = None
+        return []
+    except OSError:
+        return []
+
+    if _XLSX_PROXY_CACHE is not None and _XLSX_PROXY_MTIME == st.st_mtime:
+        return _XLSX_PROXY_CACHE
+
+    try:
+        import pandas as pd  # type: ignore
+    except Exception:
+        return []
+
+    try:
+        df = pd.read_excel(PROXY_XLSX, engine="openpyxl")
+    except Exception as exc:
+        log.warning("Unable to read proxy xlsx %s: %s", PROXY_XLSX, exc)
+        return []
+
+    if df.empty:
+        _XLSX_PROXY_CACHE = []
+        _XLSX_PROXY_MTIME = st.st_mtime
+        return []
+
+    target_col = None
+    for col in df.columns:
+        col_norm = str(col).strip().lower()
+        if col_norm in {"proxy", "proxies", "url"}:
+            target_col = col
+            break
+    if target_col is None:
+        target_col = df.columns[0]
+
+    proxies: list[str] = []
+    for val in df[target_col].tolist():
+        if val is None:
+            continue
+        text = str(val).strip()
+        if not text or text.lower() in {"nan", "none"}:
+            continue
+        if text.startswith("#"):
+            continue
+        proxies.append(text)
+
+    _XLSX_PROXY_CACHE = proxies
+    _XLSX_PROXY_MTIME = st.st_mtime
+    return proxies
+
+
 def _pick_proxy() -> str | None:
     candidates: list[str] = []
     if PROXY_LIST:
         candidates.extend(PROXY_LIST)
+    xlsx_proxies = _load_proxies_from_xlsx()
+    if xlsx_proxies:
+        candidates.extend(xlsx_proxies)
     file_proxies = _load_proxies_from_file()
     if file_proxies:
         candidates.extend(file_proxies)

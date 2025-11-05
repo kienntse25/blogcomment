@@ -97,3 +97,10 @@ if _proxy_file_env:
 else:
     _default_proxy_file = os.path.join("data", "proxies.txt")
     PROXY_FILE = _default_proxy_file if os.path.exists(_default_proxy_file) else None
+
+_proxy_xlsx_env = (os.getenv("PROXY_XLSX") or "").strip()
+if _proxy_xlsx_env:
+    PROXY_XLSX = _proxy_xlsx_env
+else:
+    _default_proxy_xlsx = os.path.join("data", "proxies.xlsx")
+    PROXY_XLSX = _default_proxy_xlsx if os.path.exists(_default_proxy_xlsx) else None
