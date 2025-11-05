@@ -1,6 +1,7 @@
 # src/driver_factory.py
 from __future__ import annotations
 import os
+import time
 import shutil
 import threading
 from typing import Optional
@@ -44,7 +45,11 @@ def _resolve_driver_path() -> str:
     global _DRIVER_PATH
     with _DRIVER_LOCK:
         if not _DRIVER_PATH:
-            _DRIVER_PATH = ChromeDriverManager(cache_valid_range=30).install()
+            try:
+                _DRIVER_PATH = ChromeDriverManager(cache_valid_range=30).install()
+            except TypeError:
+                # webdriver-manager >= 4 dropped cache_valid_range
+                _DRIVER_PATH = ChromeDriverManager().install()
     return _DRIVER_PATH
 
 
@@ -118,6 +123,13 @@ def make_uc_driver(proxy: Optional[str] = None):
     except FileNotFoundError:
         _clear_uc_cache()
         drv = _create_uc()
+    except OSError as exc:
+        if getattr(exc, "errno", None) == 26:  # Text file busy
+            _clear_uc_cache()
+            time.sleep(1)
+            drv = _create_uc()
+        else:
+            raise
 
     drv.set_page_load_timeout(int(os.getenv("PAGELOAD_TIMEOUT", "25")))
     return drv
