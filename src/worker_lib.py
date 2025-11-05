@@ -1,21 +1,78 @@
 # src/worker_lib.py
 from __future__ import annotations
+import os
 import time
 import socket
 import logging
+import random
 import undetected_chromedriver as uc
 from selenium.common.exceptions import InvalidSessionIdException
 from urllib3.exceptions import ProtocolError, ReadTimeoutError
 from http.client import RemoteDisconnected
 
-from .config import HEADLESS, RETRY_DRIVER_VERSIONS, MAX_ATTEMPTS, RETRY_DELAY_SEC
+from .config import (
+    HEADLESS,
+    RETRY_DRIVER_VERSIONS,
+    MAX_ATTEMPTS,
+    RETRY_DELAY_SEC,
+    PROXY_URL,
+    PROXY_LIST,
+    PROXY_FILE,
+)
 from .registry import was_seen, mark_seen
 from . import commenter
 from .driver_factory import make_selenium_driver
 
 log = logging.getLogger("worker_lib")
 
-def _make_driver_uc(version_main: int = 0):
+_FILE_PROXY_CACHE: list[str] | None = None
+_FILE_PROXY_MTIME: float | None = None
+
+
+def _load_proxies_from_file() -> list[str]:
+    global _FILE_PROXY_CACHE, _FILE_PROXY_MTIME
+    if not PROXY_FILE:
+        return []
+    try:
+        st = os.stat(PROXY_FILE)
+    except FileNotFoundError:
+        _FILE_PROXY_CACHE = None
+        _FILE_PROXY_MTIME = None
+        return []
+    except OSError:
+        return []
+
+    if _FILE_PROXY_CACHE is not None and _FILE_PROXY_MTIME == st.st_mtime:
+        return _FILE_PROXY_CACHE
+
+    try:
+        with open(PROXY_FILE, "r", encoding="utf-8") as fh:
+            proxies = [
+                line.strip()
+                for line in fh
+                if line.strip() and not line.strip().startswith("#")
+            ]
+    except OSError:
+        return []
+
+    _FILE_PROXY_CACHE = proxies
+    _FILE_PROXY_MTIME = st.st_mtime
+    return proxies
+
+
+def _pick_proxy() -> str | None:
+    candidates: list[str] = []
+    if PROXY_LIST:
+        candidates.extend(PROXY_LIST)
+    file_proxies = _load_proxies_from_file()
+    if file_proxies:
+        candidates.extend(file_proxies)
+    if candidates:
+        return random.choice(candidates)
+    return PROXY_URL
+
+
+def _make_driver_uc(version_main: int = 0, proxy: str | None = None):
     """
     version_main = 0 → để UC auto chọn.
     Nếu lỗi version mismatch, sẽ fallback sang các version trong RETRY_DRIVER_VERSIONS.
@@ -32,6 +89,9 @@ def _make_driver_uc(version_main: int = 0):
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_argument("--window-size=1280,2400")
 
+    if proxy:
+        opts.add_argument(f"--proxy-server={proxy}")
+
     driver = uc.Chrome(options=opts, version_main=(version_main or None), use_subprocess=True)
     try:
         driver.set_window_size(1280, 2400)
@@ -40,12 +100,12 @@ def _make_driver_uc(version_main: int = 0):
     return driver
 
 
-def _acquire_driver(prefer_uc: bool = True):
+def _acquire_driver(prefer_uc: bool = True, proxy: str | None = None):
     errors: list[str] = []
     if prefer_uc:
         for idx, ver in enumerate(RETRY_DRIVER_VERSIONS, start=1):
             try:
-                driver = _make_driver_uc(ver)
+                driver = _make_driver_uc(ver, proxy=proxy)
                 log.info(
                     "[worker_lib] Created Chrome driver (provider=uc, attempt=%d, major=%s)",
                     idx,
@@ -57,7 +117,7 @@ def _acquire_driver(prefer_uc: bool = True):
                 errors.append(msg)
                 log.warning("[worker_lib] make_driver UC attempt %d failed: %s", idx, e)
     try:
-        driver = make_selenium_driver()
+        driver = make_selenium_driver(proxy=proxy)
         log.info("[worker_lib] Fallback to Selenium driver (provider=selenium)")
         return driver, "selenium", ""
     except Exception as e:
@@ -124,13 +184,17 @@ def run_one_link(job: dict) -> dict:
     status = "FAILED"
     language = "unknown"
     prefer_uc = True
+    proxy = _pick_proxy()
     last_driver_provider = "none"
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         attempts = attempt
         driver = None
         try:
-            driver, driver_provider, last_driver_err = _acquire_driver(prefer_uc=prefer_uc)
+            driver, driver_provider, last_driver_err = _acquire_driver(
+                prefer_uc=prefer_uc,
+                proxy=proxy,
+            )
             if not driver:
                 last_reason = f"WebDriver init fail: {last_driver_err}"
                 log.error("[worker_lib] Unable to create driver for %s: %s", url, last_driver_err)
@@ -163,6 +227,7 @@ def run_one_link(job: dict) -> dict:
                 e,
             )
             prefer_uc = False
+            proxy = None
             if attempt == MAX_ATTEMPTS:
                 break
             time.sleep(RETRY_DELAY_SEC)
@@ -178,6 +243,7 @@ def run_one_link(job: dict) -> dict:
                 e,
             )
             prefer_uc = False
+            proxy = None
             if attempt == MAX_ATTEMPTS:
                 break
             time.sleep(RETRY_DELAY_SEC)
@@ -193,6 +259,7 @@ def run_one_link(job: dict) -> dict:
                 e,
             )
             prefer_uc = False
+            proxy = None
             if attempt == MAX_ATTEMPTS:
                 break
             time.sleep(RETRY_DELAY_SEC)

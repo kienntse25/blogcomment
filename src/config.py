@@ -44,6 +44,11 @@ def _parse_versions(raw: str | None, fallback: Iterable[int]) -> list[int]:
             continue
     return out or list(fallback)
 
+def _parse_list(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
 
 # Timeout & timing
 FIND_TIMEOUT = _env_float("FIND_TIMEOUT", 8.0)           # Thời gian tìm field (s)
@@ -82,3 +87,13 @@ FAILSHOT_DIR = os.getenv("FAILSHOT_DIR", "logs/failshots")
 MAX_ATTEMPTS = _env_int("MAX_ATTEMPTS", 2)
 RETRY_DELAY_SEC = _env_float("RETRY_DELAY_SEC", 3.0)
 LANG_DETECT_MIN_CHARS = _env_int("LANG_DETECT_MIN_CHARS", 160)
+
+# Proxy
+PROXY_URL = (os.getenv("PROXY_URL") or "").strip() or None
+PROXY_LIST = _parse_list(os.getenv("PROXY_LIST"))
+_proxy_file_env = (os.getenv("PROXY_FILE") or "").strip()
+if _proxy_file_env:
+    PROXY_FILE = _proxy_file_env
+else:
+    _default_proxy_file = os.path.join("data", "proxies.txt")
+    PROXY_FILE = _default_proxy_file if os.path.exists(_default_proxy_file) else None

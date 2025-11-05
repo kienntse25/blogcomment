@@ -42,8 +42,16 @@ sudo systemctl enable --now celery
 | `RETRY_DELAY_SEC` | `3.0` | Delay giữa các lần retry |
 | `RETRY_DRIVER_VERSIONS` | `0,141,140` | Danh sách uc major version fallback |
 | `REGISTRY_DB` | `data/registry.sqlite3` | Đường dẫn registry |
+| `PROXY_URL` | *(trống)* | Proxy cố định dạng `http://user:pass@host:port` |
+| `PROXY_LIST` | *(trống)* | Danh sách proxy cách nhau dấu phẩy, worker chọn ngẫu nhiên |
+| `PROXY_FILE` | `data/proxies.txt` nếu file tồn tại | Đường dẫn file chứa danh sách proxy (mỗi dòng một proxy, hỗ trợ `#` comment) |
 
 ### Kiến trúc
+
+> Thứ tự ưu tiên proxy: `PROXY_LIST` → nội dung `PROXY_FILE` → `PROXY_URL`. Khi gặp lỗi kết nối, worker tự động thử lại lượt tiếp theo không proxy.
+
+Tạo file `data/proxies.txt` với mỗi dòng một proxy (các dòng rỗng hoặc bắt đầu bằng `#` sẽ bị bỏ qua) để worker tự động xoay vòng nếu không cần cấu hình biến môi trường.
+
 
 1. `push_jobs_from_excel.py` đọc file Excel, chuẩn hóa header (kể cả alias/không dấu).
 2. Mỗi job được đẩy sang task `run_comment` (Celery) hoặc chạy trực tiếp khi dùng `--sync-one`.
