@@ -8,3 +8,5 @@ langdetect==1.0.9
 requests>=2.32
 loguru>=0.7
 webdriver-manager>=4.0
+google-generativeai
+python-dotenv
