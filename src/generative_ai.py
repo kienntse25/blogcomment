@@ -25,8 +25,8 @@ def configure_gemini_api():
 
 def generate_content_from_excel(
     file_path: str = "data/comments.xlsx",
-    keyword_col: str = "keywords",
-    content_col: str = "comment",
+    keyword_col: str = "Anchor",
+    content_col: str = "Nội dung",
 ):
     """
     Đọc file Excel, dùng cột keywords để tạo nội dung bằng Gemini và cập nhật lại cột content.
