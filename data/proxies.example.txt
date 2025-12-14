@@ -1,0 +1,13 @@
+# Example proxy list (one per line)
+# Supported formats:
+# - http://user:pass@host:port
+# - socks5://user:pass@host:port
+# - host:port
+# - PORT (port-only), requires PROXY_HOST (+ optional PROXY_USER/PROXY_PASS)
+# - IP:PORT:USER:PASS (provider format), auto-converted to http://USER:PASS@IP:PORT
+
+113.182.209.205:37973:tmproxyUser:tmproxyPass
+http://user:pass@proxy.example.com:10001
+socks5://user:pass@proxy.example.com:1080
+proxy.example.com:3128
+10001

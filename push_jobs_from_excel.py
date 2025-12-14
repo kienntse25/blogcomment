@@ -76,8 +76,20 @@ def main():
     ap.add_argument(
         "--limit",
         type=int,
-        default=10,
+        default=0,
         help="Số dòng tối đa để đẩy (0 hoặc giá trị âm = không giới hạn)",
+    )
+    ap.add_argument(
+        "--task-timeout",
+        type=int,
+        default=240,
+        help="Timeout chờ kết quả mỗi task (giây)",
+    )
+    ap.add_argument(
+        "--flush-every",
+        type=int,
+        default=25,
+        help="Ghi tạm kết quả ra file output sau mỗi N kết quả (giúp xem progress khi đang chạy)",
     )
     ap.add_argument("--sync-one", action="store_true", help="Chạy 1 dòng đầu không cần Celery")
     args = ap.parse_args()
@@ -156,12 +168,18 @@ def main():
 
     logging.info("Đang chờ kết quả từ các task...")
     results=[]
+    flush_every = max(1, int(args.flush_every))
+    last_flushed = 0
     for j, ar in tasks:
         try:
-            out = ar.get(timeout=240)
+            out = ar.get(timeout=int(args.task_timeout))
         except Exception as e:
             out = {"url": j["url"], "status":"FAILED", "reason":f"No result/timeout: {e}", "comment_link":"", "duration_sec":0.0}
         results.append(out)
+        if len(results) - last_flushed >= flush_every:
+            pd.DataFrame(results, columns=RESULT_COLUMNS).to_excel(args.output, index=False)
+            last_flushed = len(results)
+            logging.info(f"Đã ghi tạm {args.output} ({last_flushed} dòng).")
 
     if not results:
         results=[{"url":"", "status":"FAILED", "reason":"No tasks executed", "comment_link":"", "duration_sec":0.0, "language":"unknown", "attempts":0}]

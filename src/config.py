@@ -104,3 +104,10 @@ if _proxy_xlsx_env:
 else:
     _default_proxy_xlsx = os.path.join("data", "proxies.xlsx")
     PROXY_XLSX = _default_proxy_xlsx if os.path.exists(_default_proxy_xlsx) else None
+
+# Port-only proxy entries (e.g. "10001" in proxies.xlsx/txt) can be expanded via these:
+# PROXY_HOST=proxy.provider.com (no port), optional PROXY_USER/PROXY_PASS if provider requires auth.
+PROXY_SCHEME = (os.getenv("PROXY_SCHEME") or "http").strip() or "http"
+PROXY_HOST = (os.getenv("PROXY_HOST") or "").strip() or None
+PROXY_USER = (os.getenv("PROXY_USER") or "").strip() or None
+PROXY_PASS = (os.getenv("PROXY_PASS") or "").strip() or None

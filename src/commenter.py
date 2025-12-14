@@ -94,6 +94,28 @@ def _reveal_hidden_textarea(driver):
     except Exception:
         return None
 
+
+def _find_textarea_fallback(driver):
+    """Thử tìm textarea trong các form có id/class chứa 'comment' (best-effort)."""
+    js = """
+    const forms = Array.from(document.querySelectorAll('form'));
+    for (const f of forms) {
+        const meta = ((f.id || '') + ' ' + (f.className || '')).toLowerCase();
+        if (meta.includes('comment')) {
+            const ta = f.querySelector('textarea');
+            if (ta && ta.offsetParent !== null) return ta;
+        }
+    }
+    const anyTa = Array.from(document.querySelectorAll('textarea')).find(el => el && el.offsetParent !== null);
+    return anyTa || null;
+    """
+    try:
+        return driver.execute_script(js) or None
+    except InvalidSessionIdException:
+        raise
+    except Exception:
+        return None
+
 def _scroll_into_view(driver, el):
     try:
         driver.execute_script(
@@ -466,7 +488,9 @@ def process_job(
     # Tìm field
     textarea_selectors = [
         "textarea#comment", "textarea[name='comment']", "form#commentform textarea",
-        "textarea.comment-form-textarea", "form.comment-form textarea", "textarea"
+        "textarea.comment-form-textarea", "form.comment-form textarea", "textarea.comment-form-comment",
+        "form.comment-form-comment textarea", "#comment-form textarea",
+        "textarea#comment-text", "form[id*='comment'] textarea", "textarea"
     ]
     name_selectors  = ["input#author", "input[name='author']", "input[name='name']", "input[name='author-name']"]
     email_selectors = ["input#email",  "input[name='email']"]
@@ -488,12 +512,12 @@ def process_job(
         _progressive_scroll(driver, steps=3, pause=0.4)
         ta, ta_ifr = _find_any_frame(driver, textarea_selectors, timeout=FIND_TIMEOUT)
         if not ta:
-            candidate = _reveal_hidden_textarea(driver)
+            candidate = _reveal_hidden_textarea(driver) or _find_textarea_fallback(driver)
             if candidate:
                 ta = candidate
                 ta_ifr = None
     if not ta:
-        if login_hint:
+        if login_hint and not toggled:
             return False, "Login required", ""
         if platform in platform_reasons:
             return False, platform_reasons.get(platform, "Comment box not found"), ""

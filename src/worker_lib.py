@@ -6,6 +6,7 @@ import socket
 import logging
 import random
 import undetected_chromedriver as uc
+from urllib.parse import urlparse
 from selenium.common.exceptions import InvalidSessionIdException
 from urllib3.exceptions import ProtocolError, ReadTimeoutError
 from http.client import RemoteDisconnected
@@ -19,6 +20,10 @@ from .config import (
     PROXY_LIST,
     PROXY_FILE,
     PROXY_XLSX,
+    PROXY_SCHEME,
+    PROXY_HOST,
+    PROXY_USER,
+    PROXY_PASS,
 )
 from .registry import was_seen, mark_seen
 from . import commenter
@@ -120,19 +125,113 @@ def _load_proxies_from_xlsx() -> list[str]:
     return proxies
 
 
-def _pick_proxy() -> str | None:
-    candidates: list[str] = []
+def _proxy_base_url() -> str | None:
+    """
+    Build base proxy URL from env for "port-only" proxies.
+    Example: PROXY_HOST=proxy.provider.com, PROXY_USER/PASS optional.
+    Returns like: http://user:pass@proxy.provider.com
+    """
+    if not PROXY_HOST:
+        return None
+    host = PROXY_HOST.strip()
+    scheme = (PROXY_SCHEME or "http").strip() or "http"
+
+    if "://" in host:
+        parsed = urlparse(host)
+        scheme = parsed.scheme or scheme
+        netloc = parsed.netloc or parsed.path
+    else:
+        netloc = host
+
+    if "@" in netloc:
+        return f"{scheme}://{netloc}"
+    if PROXY_USER and PROXY_PASS:
+        return f"{scheme}://{PROXY_USER}:{PROXY_PASS}@{netloc}"
+    return f"{scheme}://{netloc}"
+
+
+def _normalize_proxy_entry(raw: str) -> str | None:
+    """
+    Accept:
+      - full URL: http://user:pass@host:port
+      - host:port
+      - port-only (digits), expanded using PROXY_HOST (+ optional auth envs)
+    """
+    if not raw:
+        return None
+    text = str(raw).strip()
+    if not text or text.lower() in {"nan", "none"} or text.startswith("#"):
+        return None
+
+    if "://" in text:
+        return text
+
+    # Excel often turns numeric ports into "12345.0"
+    if text.endswith(".0") and text[:-2].isdigit():
+        text = text[:-2]
+
+    # Common provider format: host:port:user:pass (e.g. tmproxy)
+    parts = text.split(":")
+    if len(parts) == 4 and parts[1].isdigit():
+        host, port, user, password = parts
+        scheme = (PROXY_SCHEME or "http").strip() or "http"
+        return f"{scheme}://{user}:{password}@{host}:{port}"
+
+    if text.isdigit():
+        base = _proxy_base_url()
+        if not base:
+            return None
+        return f"{base}:{text}"
+
+    if ":" in text and text.rsplit(":", 1)[-1].isdigit():
+        # host:port -> ensure scheme/auth
+        base = _proxy_base_url()
+        if base:
+            # If PROXY_HOST also provided, only use its auth+scheme, but keep the given host:port.
+            parsed = urlparse(base)
+            scheme = parsed.scheme or (PROXY_SCHEME or "http")
+            auth = ""
+            if parsed.username and parsed.password:
+                auth = f"{parsed.username}:{parsed.password}@"
+            return f"{scheme}://{auth}{text}"
+        return f"http://{text}"
+
+    return text
+
+
+def _proxy_candidates(exclude: str | None = None) -> list[str]:
+    raw: list[str] = []
     if PROXY_LIST:
-        candidates.extend(PROXY_LIST)
-    xlsx_proxies = _load_proxies_from_xlsx()
-    if xlsx_proxies:
-        candidates.extend(xlsx_proxies)
-    file_proxies = _load_proxies_from_file()
-    if file_proxies:
-        candidates.extend(file_proxies)
+        raw.extend(PROXY_LIST)
+    raw.extend(_load_proxies_from_xlsx() or [])
+    raw.extend(_load_proxies_from_file() or [])
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        p = _normalize_proxy_entry(item)
+        if not p:
+            continue
+        if exclude and p == exclude:
+            continue
+        if p in seen:
+            continue
+        seen.add(p)
+        out.append(p)
+    return out
+
+
+def _pick_proxy() -> str | None:
+    candidates = _proxy_candidates()
     if candidates:
         return random.choice(candidates)
     return PROXY_URL
+
+
+def _pick_proxy_excluding(exclude: str | None) -> str | None:
+    candidates = _proxy_candidates(exclude=exclude)
+    if candidates:
+        return random.choice(candidates)
+    return None
 
 
 def _make_driver_uc(version_main: int = 0, proxy: str | None = None):
@@ -254,6 +353,10 @@ def run_one_link(job: dict) -> dict:
         attempts = attempt
         driver = None
         try:
+            # Nếu retry, thử proxy khác (hoặc no-proxy) để tăng tỷ lệ thành công.
+            if attempt > 1:
+                proxy = _pick_proxy_excluding(proxy)
+
             driver, driver_provider, last_driver_err = _acquire_driver(
                 prefer_uc=prefer_uc,
                 proxy=proxy,
@@ -261,7 +364,12 @@ def run_one_link(job: dict) -> dict:
             if not driver:
                 last_reason = f"WebDriver init fail: {last_driver_err}"
                 log.error("[worker_lib] Unable to create driver for %s: %s", url, last_driver_err)
-                break
+                prefer_uc = False
+                proxy = None
+                if attempt == MAX_ATTEMPTS:
+                    break
+                time.sleep(RETRY_DELAY_SEC)
+                continue
             last_driver_provider = driver_provider
 
             ok, rsn, cm_link = commenter.process_job(driver, job)
@@ -330,6 +438,8 @@ def run_one_link(job: dict) -> dict:
             status = "FAILED"
             last_reason = f"Exception: {e}"
             log.exception("[worker_lib] Exception while processing %s", url)
+            prefer_uc = False
+            proxy = None
             if attempt == MAX_ATTEMPTS:
                 break
             time.sleep(RETRY_DELAY_SEC)

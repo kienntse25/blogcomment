@@ -13,6 +13,7 @@ Tool tự động gửi bình luận hàng loạt cho mục đích SEO an toàn.
 
 ```bash
 make venv                      # tạo và cài đặt virtualenv
+cp .env.example .env           # (tuỳ chọn) tạo file env local
 source scripts/setup_env.sh    # nạp biến môi trường mặc định
 make worker                    # chạy Celery worker (giữ tab này)
 make pipeline                  # tab khác: chạy pipeline từ Excel
@@ -46,12 +47,20 @@ sudo systemctl enable --now celery
 | `PROXY_LIST` | *(trống)* | Danh sách proxy cách nhau dấu phẩy, worker chọn ngẫu nhiên |
 | `PROXY_FILE` | `data/proxies.txt` nếu file tồn tại | Đường dẫn file chứa danh sách proxy (mỗi dòng một proxy, hỗ trợ `#` comment) |
 | `PROXY_XLSX` | `data/proxies.xlsx` nếu file tồn tại | File Excel (cột `Proxy` hoặc cột đầu tiên) chứa danh sách proxy |
+| `PROXY_HOST` | *(trống)* | Dùng khi file proxy chỉ chứa `PORT` (VD: `proxy.provider.com`) |
+| `PROXY_SCHEME` | `http` | Scheme cho proxy khi ghép từ `PROXY_HOST` + `PORT` |
+| `PROXY_USER` | *(trống)* | User cho proxy port-only (nếu cần) |
+| `PROXY_PASS` | *(trống)* | Pass cho proxy port-only (nếu cần) |
 
 ### Kiến trúc
 
 > Thứ tự ưu tiên proxy: `PROXY_LIST` → nội dung `PROXY_XLSX` → nội dung `PROXY_FILE` → `PROXY_URL`. Khi gặp lỗi kết nối, worker tự động thử lại lượt tiếp theo không proxy.
 
 Tạo file `data/proxies.txt` *hoặc* `data/proxies.xlsx` (cột `Proxy`, hoặc chỉ cần một cột đầu tiên chứa proxy) để worker tự động xoay vòng mà không cần chỉnh biến môi trường. Các dòng trống hoặc bắt đầu bằng `#` sẽ bị bỏ qua.
+
+Nếu nhà cung cấp là loại "PORT" (FPT/VNPT/Viettel…), bạn có thể để file proxy chỉ chứa số port (mỗi dòng một port). Khi đó cấu hình thêm `PROXY_HOST` (và nếu cần `PROXY_USER`/`PROXY_PASS`) để tool tự ghép thành `http://user:pass@PROXY_HOST:PORT`.
+
+Nếu nhà cung cấp trả proxy dạng `IP:PORT:USER:PASS` (thường gặp ở một số API proxy), bạn có thể dán trực tiếp dòng đó vào `data/proxies.txt`/`data/proxies.xlsx`; tool sẽ tự chuyển thành dạng `http://USER:PASS@IP:PORT` (scheme lấy từ `PROXY_SCHEME`, mặc định `http`).
 
 
 1. `push_jobs_from_excel.py` đọc file Excel, chuẩn hóa header (kể cả alias/không dấu).

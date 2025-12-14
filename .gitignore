@@ -28,6 +28,11 @@ run.log
 # Data outputs & cache (giữ template input)
 data/comments_out_*.xlsx
 data/forms_cache.json
+data/proxies.txt
+data/proxies.xlsx
+
+# Secrets
+.env
 
 # Tools caches
 .pytest_cache/
