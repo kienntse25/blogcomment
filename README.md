@@ -34,6 +34,13 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now celery
 ```
 
+Chạy với file Excel mới trên VPS:
+
+- Dùng tham số: `python push_jobs_from_excel.py --input data/your_file.xlsx --output data/comments_out.xlsx --limit 0`
+- Hoặc dùng Makefile: `make pipeline INPUT=data/your_file.xlsx OUTPUT=data/comments_out.xlsx`
+
+Mẫu input nằm ở `data/comments.template.xlsx`. Upload file của bạn vào `data/` rồi chạy với `--input` (khuyến nghị, để tránh xung đột khi `git pull`).
+
 ### Biến môi trường hữu ích
 
 | ENV | Mặc định | Ghi chú |
@@ -61,6 +68,8 @@ Tạo file `data/proxies.txt` *hoặc* `data/proxies.xlsx` (cột `Proxy`, hoặ
 Nếu nhà cung cấp là loại "PORT" (FPT/VNPT/Viettel…), bạn có thể để file proxy chỉ chứa số port (mỗi dòng một port). Khi đó cấu hình thêm `PROXY_HOST` (và nếu cần `PROXY_USER`/`PROXY_PASS`) để tool tự ghép thành `http://user:pass@PROXY_HOST:PORT`.
 
 Nếu nhà cung cấp trả proxy dạng `IP:PORT:USER:PASS` (thường gặp ở một số API proxy), bạn có thể dán trực tiếp dòng đó vào `data/proxies.txt`/`data/proxies.xlsx`; tool sẽ tự chuyển thành dạng `http://USER:PASS@IP:PORT` (scheme lấy từ `PROXY_SCHEME`, mặc định `http`).
+
+> Lưu ý: để ổn định khi chạy song song nhiều worker, mặc định tool ưu tiên Selenium. Chỉ bật UC khi cần bằng `USE_UC=true` và có thể set `UC_CLEAR_CACHE=true` nếu UC bị lỗi cache.
 
 
 1. `push_jobs_from_excel.py` đọc file Excel, chuẩn hóa header (kể cả alias/không dấu).

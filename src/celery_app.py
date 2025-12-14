@@ -24,13 +24,14 @@ celery.conf.update(
         "run_comment": {"queue": "camp_test", "routing_key": "camp_test"},
     },
 
-    # Serializer
-    task_serializer="pickle",
-    result_serializer="pickle",
-    accept_content=["pickle", "json"],
+    # Serializer: dùng JSON để an toàn hơn (tránh pickle) và cho phép chạy worker không cần C_FORCE_ROOT.
+    task_serializer="json",
+    result_serializer="json",
+    accept_content=["json"],
 
     # Ổn định worker
     worker_cancel_long_running_tasks_on_connection_loss=True,
+    broker_connection_retry_on_startup=True,
 )
 
 # Đảm bảo tự động nạp module task khi worker khởi động

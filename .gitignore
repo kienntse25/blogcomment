@@ -30,6 +30,11 @@ data/comments_out_*.xlsx
 data/forms_cache.json
 data/proxies.txt
 data/proxies.xlsx
+data/comments.xlsx
+data/comments_out.xlsx
+data/registry.sqlite3
+push_jobs.log
+google-chrome-stable_current_amd64.deb*
 
 # Secrets
 .env

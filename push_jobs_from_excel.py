@@ -5,6 +5,7 @@ import re
 import argparse
 import logging
 import unicodedata
+import time
 import pandas as pd
 
 REQUIRED_COLUMNS = ["URL", "Anchor", "Website", "Nội Dung", "Name", "Email"]
@@ -23,6 +24,20 @@ def _read_df(path):
     if not os.path.exists(path):
         raise FileNotFoundError(f"Không thấy file: {path}")
     return pd.read_excel(path, engine="openpyxl").fillna("")
+
+def _default_input_path() -> str:
+    env_path = (os.getenv("INPUT_XLSX") or "").strip()
+    if env_path:
+        return env_path
+    if os.path.exists("data/comments.xlsx"):
+        return "data/comments.xlsx"
+    if os.path.exists("data/comments.template.xlsx"):
+        return "data/comments.template.xlsx"
+    return "data/comments.xlsx"
+
+def _default_output_path() -> str:
+    env_path = (os.getenv("OUTPUT_XLSX") or "").strip()
+    return env_path or "data/comments_out.xlsx"
 
 
 def _normalize_header(text: str) -> str:
@@ -71,8 +86,8 @@ def _sync_one(job: dict) -> dict:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input", default="data/comments.xlsx", help="Đường dẫn file Excel input")
-    ap.add_argument("--output", default="data/comments_out.xlsx", help="Đường dẫn file Excel output")
+    ap.add_argument("--input", default=_default_input_path(), help="Đường dẫn file Excel input")
+    ap.add_argument("--output", default=_default_output_path(), help="Đường dẫn file Excel output")
     ap.add_argument(
         "--limit",
         type=int,
@@ -101,6 +116,8 @@ def main():
         format="%(asctime)s - %(levelname)s - %(message)s",
         handlers=[logging.FileHandler("push_jobs.log", encoding="utf-8"), logging.StreamHandler()],
     )
+    logging.info(f"Input: {args.input}")
+    logging.info(f"Output: {args.output}")
 
     # Đọc input
     try:
@@ -170,16 +187,35 @@ def main():
     results=[]
     flush_every = max(1, int(args.flush_every))
     last_flushed = 0
-    for j, ar in tasks:
-        try:
-            out = ar.get(timeout=int(args.task_timeout))
-        except Exception as e:
-            out = {"url": j["url"], "status":"FAILED", "reason":f"No result/timeout: {e}", "comment_link":"", "duration_sec":0.0}
-        results.append(out)
-        if len(results) - last_flushed >= flush_every:
-            pd.DataFrame(results, columns=RESULT_COLUMNS).to_excel(args.output, index=False)
-            last_flushed = len(results)
-            logging.info(f"Đã ghi tạm {args.output} ({last_flushed} dòng).")
+    poll_interval = 0.5
+
+    # Chờ theo kiểu "as completed": tránh bị kẹt ở 1 task chậm/treo, và ghi output dần theo tiến độ.
+    pending = [(j, ar) for (j, ar) in tasks]
+    t_start = time.time()
+
+    while pending:
+        progressed = False
+        i = len(pending) - 1
+        while i >= 0:
+            j, ar = pending[i]
+            if ar.ready():
+                try:
+                    out = ar.get(timeout=1)
+                except Exception as e:
+                    out = {"url": j["url"], "status":"FAILED", "reason":f"No result/timeout: {e}", "comment_link":"", "duration_sec":0.0}
+                results.append(out)
+                pending[i] = pending[-1]
+                pending.pop()
+                progressed = True
+                if len(results) - last_flushed >= flush_every:
+                    pd.DataFrame(results, columns=RESULT_COLUMNS).to_excel(args.output, index=False)
+                    last_flushed = len(results)
+                    logging.info(f"Đã ghi tạm {args.output} ({last_flushed} dòng).")
+            i -= 1
+
+        if not progressed:
+            # Nếu quá lâu không có task nào xong, vẫn tiếp tục chờ (giữ tốc độ poll vừa phải)
+            time.sleep(poll_interval)
 
     if not results:
         results=[{"url":"", "status":"FAILED", "reason":"No tasks executed", "comment_link":"", "duration_sec":0.0, "language":"unknown", "attempts":0}]

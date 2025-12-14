@@ -5,6 +5,7 @@ import time
 import socket
 import logging
 import random
+from contextlib import contextmanager
 import undetected_chromedriver as uc
 from urllib.parse import urlparse
 from selenium.common.exceptions import InvalidSessionIdException
@@ -125,6 +126,65 @@ def _load_proxies_from_xlsx() -> list[str]:
     return proxies
 
 
+def _use_uc() -> bool:
+    # Default to Selenium for stability; enable UC explicitly.
+    return os.getenv("USE_UC", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _clear_uc_cache() -> None:
+    # UC caches patched driver under these locations (Linux & macOS). Clearing helps with
+    # "Text file busy" / missing binary issues after concurrent patching.
+    home = os.path.expanduser("~")
+    linux_cache = os.path.join(home, ".local", "share", "undetected_chromedriver")
+    mac_cache = os.path.join(home, "Library", "Application Support", "undetected_chromedriver")
+    for path in (linux_cache, mac_cache):
+        try:
+            if os.path.isdir(path):
+                import shutil
+                shutil.rmtree(path, ignore_errors=True)
+        except Exception:
+            continue
+
+
+@contextmanager
+def _uc_patch_lock():
+    """
+    Serializes UC patching across Celery prefork workers to avoid:
+    - Errno 26: Text file busy
+    - missing chromedriver under UC cache dir
+    """
+    try:
+        import fcntl  # Unix only
+    except Exception:
+        yield
+        return
+
+    lock_path = os.getenv("UC_LOCK_FILE", "/tmp/undetected_chromedriver.lock")
+    timeout_sec = float(os.getenv("UC_LOCK_TIMEOUT_SEC", "60"))
+    start = time.time()
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.time() - start >= timeout_sec:
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+                    break
+                time.sleep(0.2)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            os.close(fd)
+        except Exception:
+            pass
+
+
 def _proxy_base_url() -> str | None:
     """
     Build base proxy URL from env for "port-only" proxies.
@@ -239,6 +299,10 @@ def _make_driver_uc(version_main: int = 0, proxy: str | None = None):
     version_main = 0 → để UC auto chọn.
     Nếu lỗi version mismatch, sẽ fallback sang các version trong RETRY_DRIVER_VERSIONS.
     """
+    if os.getenv("UC_CLEAR_CACHE", "false").strip().lower() in {"1", "true", "yes", "on"}:
+        with _uc_patch_lock():
+            _clear_uc_cache()
+
     opts = uc.ChromeOptions()
     if HEADLESS:
         opts.headless = True
@@ -254,7 +318,26 @@ def _make_driver_uc(version_main: int = 0, proxy: str | None = None):
     if proxy:
         opts.add_argument(f"--proxy-server={proxy}")
 
-    driver = uc.Chrome(options=opts, version_main=(version_main or None), use_subprocess=True)
+    def _create():
+        return uc.Chrome(options=opts, version_main=(version_main or None), use_subprocess=True)
+
+    try:
+        with _uc_patch_lock():
+            driver = _create()
+    except FileNotFoundError:
+        with _uc_patch_lock():
+            _clear_uc_cache()
+            time.sleep(1)
+            driver = _create()
+    except OSError as exc:
+        # Errno 26: "Text file busy" happens when multiple processes patch/use the same binary.
+        if getattr(exc, "errno", None) == 26:
+            with _uc_patch_lock():
+                _clear_uc_cache()
+                time.sleep(1)
+                driver = _create()
+        else:
+            raise
     try:
         driver.set_window_size(1280, 2400)
     except Exception:
@@ -264,7 +347,7 @@ def _make_driver_uc(version_main: int = 0, proxy: str | None = None):
 
 def _acquire_driver(prefer_uc: bool = True, proxy: str | None = None):
     errors: list[str] = []
-    if prefer_uc:
+    if prefer_uc and _use_uc():
         for idx, ver in enumerate(RETRY_DRIVER_VERSIONS, start=1):
             try:
                 driver = _make_driver_uc(ver, proxy=proxy)
