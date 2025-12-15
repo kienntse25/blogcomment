@@ -1,6 +1,8 @@
 from __future__ import annotations
 import os
 import time
+import argparse
+import logging
 import pandas as pd
 import google.generativeai as genai
 from logging import getLogger
@@ -24,12 +26,15 @@ def configure_gemini_api():
 
 
 def generate_content_from_excel(
-    file_path: str = "data/comments.xlsx",
+    file_path: str,
     keyword_col: str = "Anchor",
-    content_col: str = "Nội dung",
+    content_col: str = "Nội Dung",
+    website_col: str = "Website",
+    only_if_empty: bool = True,
 ):
     """
-    Đọc file Excel, dùng cột keywords để tạo nội dung bằng Gemini và cập nhật lại cột content.
+    Đọc file Excel, dùng cột `keyword_col` (mặc định: Anchor) để tạo nội dung bằng Gemini
+    và cập nhật lại cột `content_col` (mặc định: Nội Dung).
     """
     if not os.path.exists(file_path):
         log.error(f"File không tồn tại: {file_path}")
@@ -48,24 +53,38 @@ def generate_content_from_excel(
     if keyword_col not in df.columns:
         log.error(f"Không tìm thấy cột '{keyword_col}' trong file Excel.")
         return
+    if content_col not in df.columns:
+        log.error(f"Không tìm thấy cột '{content_col}' trong file Excel.")
+        return
+    if website_col and website_col not in df.columns:
+        log.warning(f"Không tìm thấy cột '{website_col}' trong file Excel. Sẽ tạo content không kèm website.")
 
     # 1. Thu thập các keywords và chỉ số dòng tương ứng
     tasks = []
     for index, row in df.iterrows():
         keyword_val = row.get(keyword_col)
+        existing = row.get(content_col)
+        if only_if_empty and existing and not pd.isna(existing) and str(existing).strip():
+            continue
         # Bỏ qua các giá trị rỗng hoặc NaN (Not a Number) từ Excel
         if keyword_val and not pd.isna(keyword_val):
             keyword = str(keyword_val).strip()
-            tasks.append({"index": index, "keyword": keyword})
+            website = ""
+            if website_col and website_col in df.columns:
+                website_val = row.get(website_col)
+                if website_val and not pd.isna(website_val):
+                    website = str(website_val).strip()
+            tasks.append({"index": index, "keyword": keyword, "website": website})
 
     if not tasks:
         log.warning("Không có keyword nào hợp lệ để tạo nội dung.")
         return
 
-    log.info(f"Tìm thấy {len(tasks)} keywords. Bắt đầu tạo nội dung bằng Gemini Flash...")
+    log.info(f"Tìm thấy {len(tasks)} dòng cần tạo nội dung. Bắt đầu tạo nội dung bằng Gemini...")
 
     # 2. Gọi Gemini API để tạo nội dung cho từng keyword
-    model = genai.GenerativeModel("gemini-2.5-flash-lite")
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+    model = genai.GenerativeModel(model_name)
     results_to_update = []
     request_count = 0
 
@@ -77,7 +96,14 @@ def generate_content_from_excel(
             log.info("Tiếp tục tạo nội dung...")
 
         keyword = task["keyword"]
-        prompt = f"Viết content giới thiệu về {keyword}, độ dài 50 từ"
+        website = task.get("website") or ""
+        prompt_tpl = os.getenv(
+            "GEMINI_PROMPT_TEMPLATE",
+            "Write a natural blog comment (20-35 words). "
+            "Include this exact phrase: \"{anchor}\". "
+            "Do not be spammy. No emojis. ",
+        )
+        prompt = prompt_tpl.format(anchor=keyword, website=website)
         try:
             response = model.generate_content(prompt)
             generated_content = response.text.strip()
@@ -98,3 +124,27 @@ def generate_content_from_excel(
         # 4. Lưu lại file Excel
         df.to_excel(file_path, index=False, engine="openpyxl")
         log.info(f"Đã cập nhật và lưu file thành công: {file_path}")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Generate comment content via Gemini into an Excel file.")
+    ap.add_argument("--input", default=os.getenv("INPUT_XLSX", "data/comments.xlsx"))
+    ap.add_argument("--anchor-col", default="Anchor")
+    ap.add_argument("--website-col", default="Website")
+    ap.add_argument("--content-col", default="Nội Dung")
+    ap.add_argument("--overwrite", action="store_true", help="Overwrite existing content cells")
+    args = ap.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    generate_content_from_excel(
+        file_path=args.input,
+        keyword_col=args.anchor_col,
+        website_col=args.website_col,
+        content_col=args.content_col,
+        only_if_empty=not args.overwrite,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

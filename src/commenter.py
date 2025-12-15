@@ -408,14 +408,19 @@ def _build_comment_text(base_text: str, anchor: str, website: str) -> str:
     atext = (anchor or "").strip()
     site = (website or "").strip()
     if atext and site:
+        link = f'<a href="{html.escape(site, quote=True)}">{html.escape(atext)}</a>'
+        # Nếu chưa có content, tạo content mặc định kèm anchor để vẫn có link report.
+        if not base:
+            return f"Thanks for the helpful article! {link}"
         # Thay lần xuất hiện đầu tiên của anchor bằng thẻ a; nếu không có thì thêm cuối
         if atext in base:
-            return base.replace(
-                atext,
-                f'<a href="{html.escape(site, quote=True)}">{html.escape(atext)}</a>',
-                1,
-            )
-        return f'{base} <a href="{html.escape(site, quote=True)}">{html.escape(atext)}</a>'
+            return base.replace(atext, link, 1)
+        return f"{base} {link}".strip()
+
+    # Nếu không có website nhưng có anchor, vẫn tạo content dựa theo anchor
+    if atext and not base:
+        return f"Thanks for the helpful article about {atext}!"
+
     return base or "Thank you for the article!"
 
 # ---------------- Main entry ----------------

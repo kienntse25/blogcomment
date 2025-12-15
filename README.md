@@ -41,6 +41,20 @@ Chạy với file Excel mới trên VPS:
 
 Mẫu input nằm ở `data/comments.template.xlsx`. Upload file của bạn vào `data/` rồi chạy với `--input` (khuyến nghị, để tránh xung đột khi `git pull`).
 
+Tạo nội dung tự động bằng Gemini (theo cột `Anchor`):
+
+```bash
+export GEMINI_API_KEY=...   # hoặc đặt trong .env
+python -m src.generative_ai --input data/comments_thoitiet.xlsx
+```
+
+Lệnh trên sẽ điền vào cột `Nội Dung` cho các dòng đang trống (có thể dùng `--overwrite` nếu muốn ghi đè).
+
+Gợi ý cấu hình ổn định trên VPS (tùy chọn):
+
+- Tăng retry cho lỗi driver (mặc định thêm 1 lần): `EXTRA_ATTEMPTS_ON_DRIVER_FAIL=1`
+- Nếu UC hay crash: thử `UC_USE_SUBPROCESS=false`
+
 ### Biến môi trường hữu ích
 
 | ENV | Mặc định | Ghi chú |

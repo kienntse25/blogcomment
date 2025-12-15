@@ -303,23 +303,42 @@ def _make_driver_uc(version_main: int = 0, proxy: str | None = None):
         with _uc_patch_lock():
             _clear_uc_cache()
 
+    def _common_flags() -> list[str]:
+        flags_str = os.getenv(
+            "CHROME_FLAGS",
+            "--headless=new --disable-gpu --disable-software-rasterizer "
+            "--no-sandbox --disable-dev-shm-usage --window-size=1200,2000 "
+            "--disable-blink-features=AutomationControlled "
+            "--disable-features=IsolateOrigins,site-per-process "
+            "--remote-allow-origins=*",
+        )
+        flags = [f for f in flags_str.split() if f]
+        if not HEADLESS:
+            flags = [f for f in flags if not f.startswith("--headless")]
+        return flags
+
     opts = uc.ChromeOptions()
+    for f in _common_flags():
+        opts.add_argument(f)
     if HEADLESS:
         opts.headless = True
-        opts.add_argument("--headless=new")
-    # các flag an toàn
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--disable-infobars")
-    opts.add_argument("--disable-blink-features=AutomationControlled")
+    # window-size fallback (nếu CHROME_FLAGS không set)
     opts.add_argument("--window-size=1280,2400")
+
+    ua = os.getenv("USER_AGENT")
+    if ua:
+        opts.add_argument(f"--user-agent={ua}")
 
     if proxy:
         opts.add_argument(f"--proxy-server={proxy}")
 
     def _create():
-        return uc.Chrome(options=opts, version_main=(version_main or None), use_subprocess=True)
+        use_subprocess = os.getenv("UC_USE_SUBPROCESS", "true").strip().lower() in {"1", "true", "yes", "on"}
+        return uc.Chrome(
+            options=opts,
+            version_main=(version_main or None),
+            use_subprocess=use_subprocess,
+        )
 
     try:
         with _uc_patch_lock():
@@ -432,7 +451,14 @@ def run_one_link(job: dict) -> dict:
     proxy = _pick_proxy()
     last_driver_provider = "none"
 
-    for attempt in range(1, MAX_ATTEMPTS + 1):
+    extra = 0
+    try:
+        extra = int(os.getenv("EXTRA_ATTEMPTS_ON_DRIVER_FAIL", "1"))
+    except ValueError:
+        extra = 1
+    max_attempts = max(1, MAX_ATTEMPTS + max(0, extra))
+
+    for attempt in range(1, max_attempts + 1):
         attempts = attempt
         driver = None
         try:
@@ -449,7 +475,7 @@ def run_one_link(job: dict) -> dict:
                 log.error("[worker_lib] Unable to create driver for %s: %s", url, last_driver_err)
                 prefer_uc = False
                 proxy = None
-                if attempt == MAX_ATTEMPTS:
+                if attempt == max_attempts:
                     break
                 time.sleep(RETRY_DELAY_SEC)
                 continue
@@ -464,7 +490,7 @@ def run_one_link(job: dict) -> dict:
             if ok:
                 break
 
-            if not _should_retry(rsn) or attempt == MAX_ATTEMPTS:
+            if not _should_retry(rsn) or attempt == max_attempts:
                 break
 
             log.info("[worker_lib] Retry scheduled for %s (attempt %d/%d) reason=%s", url, attempt, MAX_ATTEMPTS, rsn)
@@ -482,7 +508,7 @@ def run_one_link(job: dict) -> dict:
             )
             prefer_uc = False
             proxy = None
-            if attempt == MAX_ATTEMPTS:
+            if attempt == max_attempts:
                 break
             time.sleep(RETRY_DELAY_SEC)
         except (RemoteDisconnected, ProtocolError) as e:
@@ -498,7 +524,7 @@ def run_one_link(job: dict) -> dict:
             )
             prefer_uc = False
             proxy = None
-            if attempt == MAX_ATTEMPTS:
+            if attempt == max_attempts:
                 break
             time.sleep(RETRY_DELAY_SEC)
         except (ReadTimeoutError, TimeoutError, socket.timeout) as e:
@@ -514,7 +540,7 @@ def run_one_link(job: dict) -> dict:
             )
             prefer_uc = False
             proxy = None
-            if attempt == MAX_ATTEMPTS:
+            if attempt == max_attempts:
                 break
             time.sleep(RETRY_DELAY_SEC)
         except Exception as e:
@@ -523,7 +549,7 @@ def run_one_link(job: dict) -> dict:
             log.exception("[worker_lib] Exception while processing %s", url)
             prefer_uc = False
             proxy = None
-            if attempt == MAX_ATTEMPTS:
+            if attempt == max_attempts:
                 break
             time.sleep(RETRY_DELAY_SEC)
         finally:
