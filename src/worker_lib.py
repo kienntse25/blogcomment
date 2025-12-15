@@ -430,17 +430,7 @@ def run_one_link(job: dict) -> dict:
             "attempts": 0,
         }
 
-    # Chặn lặp lại (nhận diện bằng url+content+name+email)
-    if was_seen(url, content, name or "", email or ""):
-        return {
-            "url": url,
-            "status": "SKIPPED",
-            "reason": "Already attempted (registry)",
-            "comment_link": "",
-            "duration_sec": 0.0,
-            "language": "unknown",
-            "attempts": 0,
-        }
+    # Không SKIP theo registry: link nào được paste thì luôn thử chạy.
 
     attempts = 0
     last_reason = ""

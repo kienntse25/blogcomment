@@ -3,12 +3,14 @@ import os
 import time
 import argparse
 import logging
+import re
 import pandas as pd
 import google.generativeai as genai
 from logging import getLogger
 from dotenv import load_dotenv
 
 log = getLogger(__name__)
+_RETRY_IN_RE = re.compile(r"retry in ([0-9]+(?:\.[0-9]+)?)s", re.IGNORECASE)
 
 
 def configure_gemini_api():
@@ -82,19 +84,30 @@ def generate_content_from_excel(
 
     log.info(f"Tìm thấy {len(tasks)} dòng cần tạo nội dung. Bắt đầu tạo nội dung bằng Gemini...")
 
+    def _save_atomic() -> None:
+        tmp_path = f"{file_path}.tmp"
+        df.to_excel(tmp_path, index=False, engine="openpyxl")
+        os.replace(tmp_path, file_path)
+
     # 2. Gọi Gemini API để tạo nội dung cho từng keyword
     model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
     model = genai.GenerativeModel(model_name)
-    results_to_update = []
     request_count = 0
+    try:
+        rpm = int(os.getenv("GEMINI_REQUESTS_PER_MINUTE", "10"))
+    except ValueError:
+        rpm = 10
+    rpm = max(1, rpm)
+    min_delay = float(os.getenv("GEMINI_MIN_DELAY_SEC", str(60.0 / rpm)))
+    min_delay = max(0.0, min_delay)
+    try:
+        flush_every = int(os.getenv("GEMINI_FLUSH_EVERY", "1"))
+    except ValueError:
+        flush_every = 1
+    flush_every = max(1, flush_every)
+    updated = 0
 
     for task in tasks:
-        # Giới hạn tốc độ: nghỉ 1 phút sau mỗi 15 request
-        if request_count > 0 and request_count % 15 == 0:
-            log.info("Đã đạt giới hạn 15 requests. Tạm nghỉ 60 giây...")
-            time.sleep(60)
-            log.info("Tiếp tục tạo nội dung...")
-
         keyword = task["keyword"]
         website = task.get("website") or ""
         prompt_tpl = os.getenv(
@@ -104,26 +117,49 @@ def generate_content_from_excel(
             "Do not be spammy. No emojis. ",
         )
         prompt = prompt_tpl.format(anchor=keyword, website=website)
-        try:
-            response = model.generate_content(prompt)
-            generated_content = response.text.strip()
-            results_to_update.append({"index": task["index"], "content": generated_content})
-            request_count += 1
-            log.info(f"Đã tạo nội dung cho keyword: '{keyword}'")
-        except Exception as e:
-            log.error(f"Lỗi khi tạo nội dung cho keyword '{keyword}': {e}")
-            log.info("Tạm nghỉ 5 giây trước khi thử lại keyword tiếp theo...")
-            time.sleep(5)
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                response = model.generate_content(prompt)
+                generated_content = (response.text or "").strip()
+                if generated_content:
+                    results_to_update.append({"index": task["index"], "content": generated_content})
+                request_count += 1
+                log.info(f"Đã tạo nội dung cho keyword: '{keyword}'")
+                if min_delay:
+                    time.sleep(min_delay)
+                break
+            except Exception as e:
+                msg = str(e)
+                log.error(f"Lỗi khi tạo nội dung cho keyword '{keyword}': {msg}")
+                # Respect server-provided retry delay if present (common for 429 quota).
+                m = _RETRY_IN_RE.search(msg)
+                if m:
+                    try:
+                        delay = float(m.group(1)) + 0.5
+                    except ValueError:
+                        delay = 5.0
+                else:
+                    delay = 5.0
+                if attempts >= 3:
+                    log.warning(f"Bỏ qua keyword '{keyword}' sau {attempts} lần lỗi.")
+                    break
+                log.info(f"Tạm nghỉ {delay:.1f} giây rồi thử lại keyword này...")
+                time.sleep(delay)
 
-    # 3. Cập nhật lại nội dung vào DataFrame
-    if results_to_update:
-        log.info(f"Đang cập nhật {len(results_to_update)} dòng vào file Excel...")
-        for result in results_to_update:
-            df.loc[result["index"], content_col] = result["content"]
+                # success path: persist immediately (or every N rows) so progress is not lost
+                if generated_content:
+                    df.loc[task["index"], content_col] = generated_content
+                    updated += 1
+                    if updated % flush_every == 0:
+                        _save_atomic()
+                        log.info(f"Đã lưu tạm {file_path} (updated={updated})")
 
-        # 4. Lưu lại file Excel
-        df.to_excel(file_path, index=False, engine="openpyxl")
-        log.info(f"Đã cập nhật và lưu file thành công: {file_path}")
+    # Final flush (if needed)
+    if updated % flush_every != 0:
+        _save_atomic()
+    log.info(f"Hoàn tất. Đã cập nhật {updated} dòng vào: {file_path}")
 
 
 def main() -> int:
@@ -133,9 +169,16 @@ def main() -> int:
     ap.add_argument("--website-col", default="Website")
     ap.add_argument("--content-col", default="Nội Dung")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite existing content cells")
+    ap.add_argument(
+        "--flush-every",
+        type=int,
+        default=int(os.getenv("GEMINI_FLUSH_EVERY", "1")),
+        help="Save back to Excel after every N generated rows (default: env GEMINI_FLUSH_EVERY or 1)",
+    )
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    os.environ["GEMINI_FLUSH_EVERY"] = str(max(1, int(args.flush_every)))
     generate_content_from_excel(
         file_path=args.input,
         keyword_col=args.anchor_col,

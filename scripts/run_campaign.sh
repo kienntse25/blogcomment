@@ -8,6 +8,7 @@ OUTPUT="data/comments_out.xlsx"
 START_WORKER=1
 USE_UC="${USE_UC:-false}"
 FLUSH_REDIS=0
+CLEAN_OUTPUT=0
 CONCURRENCY="${CELERY_CONCURRENCY:-2}"
 
 usage() {
@@ -20,6 +21,7 @@ Options:
   --no-worker          Don't start Celery worker (assume it's already running)
   --use-uc             Enable undetected-chromedriver for worker (USE_UC=true)
   --flush-redis        FLUSHALL before running (clears old tasks)
+  --clean-output       Remove output + *_timeouts.xlsx before running
   --concurrency N      Celery worker concurrency (default: $CELERY_CONCURRENCY or 2)
   -h, --help           Show help
 
@@ -37,6 +39,7 @@ while [[ $# -gt 0 ]]; do
     --no-worker) START_WORKER=0; shift 1 ;;
     --use-uc) USE_UC=true; shift 1 ;;
     --flush-redis) FLUSH_REDIS=1; shift 1 ;;
+    --clean-output) CLEAN_OUTPUT=1; shift 1 ;;
     --concurrency) CONCURRENCY="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; usage; exit 2 ;;
@@ -63,6 +66,18 @@ if [[ -f "${DIR}/scripts/setup_env.sh" ]]; then
 fi
 
 cd "${DIR}"
+
+if [[ "${CLEAN_OUTPUT}" == "1" ]]; then
+  out_dir="$(dirname "${OUTPUT}")"
+  out_base="$(basename "${OUTPUT}")"
+  if [[ "${out_base,,}" == *.xlsx ]]; then
+    out_stem="${out_base%.xlsx}"
+  else
+    out_stem="${out_base}"
+  fi
+  timeouts_path="${out_dir}/${out_stem}_timeouts.xlsx"
+  rm -f "${OUTPUT}" "${timeouts_path}" push_jobs.log || true
+fi
 
 if [[ "${FLUSH_REDIS}" == "1" ]]; then
   if command -v redis-cli >/dev/null 2>&1; then

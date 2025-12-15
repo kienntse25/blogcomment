@@ -39,6 +39,14 @@ def _default_output_path() -> str:
     env_path = (os.getenv("OUTPUT_XLSX") or "").strip()
     return env_path or "data/comments_out.xlsx"
 
+def _default_timeouts_output_path(output_path: str) -> str:
+    # Derive a sibling file name, e.g. comments_out.xlsx -> comments_timeouts.xlsx
+    base = os.path.basename(output_path)
+    if base.lower().endswith(".xlsx"):
+        base = base[:-5]
+    dirname = os.path.dirname(output_path) or "."
+    return os.path.join(dirname, f"{base}_timeouts.xlsx")
+
 
 def _normalize_header(text: str) -> str:
     if text is None:
@@ -106,10 +114,22 @@ def main():
         default=25,
         help="Ghi tạm kết quả ra file output sau mỗi N kết quả (giúp xem progress khi đang chạy)",
     )
+    ap.add_argument(
+        "--timeouts-output",
+        default=None,
+        help="Ghi riêng các dòng bị Page load timeout ra file Excel (để chạy lại batch riêng)",
+    )
+    ap.add_argument(
+        "--timeout-reason-substr",
+        default="Page load timeout",
+        help="Chuỗi reason để phân loại sang file timeouts (mặc định: 'Page load timeout')",
+    )
     ap.add_argument("--sync-one", action="store_true", help="Chạy 1 dòng đầu không cần Celery")
     args = ap.parse_args()
 
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
+    timeouts_output = args.timeouts_output or _default_timeouts_output_path(args.output)
+    timeout_token = str(args.timeout_reason_substr or "").strip().lower()
 
     logging.basicConfig(
         level=logging.INFO,
@@ -118,6 +138,7 @@ def main():
     )
     logging.info(f"Input: {args.input}")
     logging.info(f"Output: {args.output}")
+    logging.info(f"Timeouts output: {timeouts_output}")
 
     # Đọc input
     try:
@@ -136,6 +157,7 @@ def main():
 
     # Tạo jobs
     jobs=[]
+    job_by_url: dict[str, dict] = {}
     max_jobs = args.limit if args.limit and args.limit > 0 else None
     for i, row in df.iterrows():
         if max_jobs is not None and len(jobs) >= max_jobs:
@@ -152,6 +174,7 @@ def main():
             "name": str(row["Name"]).strip() or "Guest",
             "email": str(row["Email"]).strip(),
         })
+        job_by_url[url] = jobs[-1]
 
     if not jobs:
         logging.warning("Không có job hợp lệ.")
@@ -185,6 +208,7 @@ def main():
 
     logging.info("Đang chờ kết quả từ các task...")
     results=[]
+    timeout_jobs: list[dict] = []
     flush_every = max(1, int(args.flush_every))
     last_flushed = 0
     poll_interval = 0.5
@@ -204,6 +228,14 @@ def main():
                 except Exception as e:
                     out = {"url": j["url"], "status":"FAILED", "reason":f"No result/timeout: {e}", "comment_link":"", "duration_sec":0.0}
                 results.append(out)
+                try:
+                    reason = str((out or {}).get("reason", "")).lower()
+                except Exception:
+                    reason = ""
+                if timeout_token and timeout_token in reason:
+                    src_job = job_by_url.get(j["url"])
+                    if src_job:
+                        timeout_jobs.append(src_job)
                 pending[i] = pending[-1]
                 pending.pop()
                 progressed = True
@@ -211,6 +243,18 @@ def main():
                     pd.DataFrame(results, columns=RESULT_COLUMNS).to_excel(args.output, index=False)
                     last_flushed = len(results)
                     logging.info(f"Đã ghi tạm {args.output} ({last_flushed} dòng).")
+                    if timeout_jobs:
+                        pd.DataFrame(timeout_jobs, columns=["url", "anchor", "website", "content", "name", "email"]).rename(
+                            columns={
+                                "url": "URL",
+                                "anchor": "Anchor",
+                                "website": "Website",
+                                "content": "Nội Dung",
+                                "name": "Name",
+                                "email": "Email",
+                            }
+                        ).to_excel(timeouts_output, index=False)
+                        logging.info(f"Đã ghi tạm {timeouts_output} ({len(timeout_jobs)} dòng timeouts).")
             i -= 1
 
         if not progressed:
@@ -221,6 +265,19 @@ def main():
         results=[{"url":"", "status":"FAILED", "reason":"No tasks executed", "comment_link":"", "duration_sec":0.0, "language":"unknown", "attempts":0}]
     pd.DataFrame(results, columns=RESULT_COLUMNS).to_excel(args.output, index=False)
     logging.info(f"Đã ghi {args.output} ({len(results)} dòng).")
+
+    if timeout_jobs:
+        pd.DataFrame(timeout_jobs, columns=["url", "anchor", "website", "content", "name", "email"]).rename(
+            columns={
+                "url": "URL",
+                "anchor": "Anchor",
+                "website": "Website",
+                "content": "Nội Dung",
+                "name": "Name",
+                "email": "Email",
+            }
+        ).to_excel(timeouts_output, index=False)
+        logging.info(f"Đã ghi {timeouts_output} ({len(timeout_jobs)} dòng timeouts).")
 
 if __name__ == "__main__":
     main()

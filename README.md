@@ -41,6 +41,17 @@ Chạy với file Excel mới trên VPS:
 
 Mẫu input nằm ở `data/comments.template.xlsx`. Upload file của bạn vào `data/` rồi chạy với `--input` (khuyến nghị, để tránh xung đột khi `git pull`).
 
+Tách riêng các URL bị `Page load timeout` để chạy lại:
+
+- Khi chạy pipeline, tool sẽ tạo thêm file `*_timeouts.xlsx` bên cạnh output (VD: `data/comments_out_timeouts.xlsx`).
+- Chạy lại batch timeout với timeout lớn hơn, concurrency thấp hơn:
+
+```bash
+export PAGELOAD_TIMEOUT=60
+export FIND_TIMEOUT=12
+python push_jobs_from_excel.py --input data/comments_out_timeouts.xlsx --output data/comments_out_retry.xlsx --limit 0
+```
+
 Tạo nội dung tự động bằng Gemini (theo cột `Anchor`):
 
 ```bash
@@ -58,7 +69,7 @@ Gợi ý cấu hình ổn định trên VPS (tùy chọn):
 Chạy "một lệnh" (Gemini → Worker → Pipeline):
 
 ```bash
-./scripts/run_campaign.sh --input data/comments_thoitiet.xlsx --output data/comments_out.xlsx --flush-redis
+./scripts/run_campaign.sh --input data/comments_thoitiet.xlsx --output data/comments_out.xlsx --flush-redis --clean-output
 ```
 
 Tuỳ chọn bật UC khi cần:
