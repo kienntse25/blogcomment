@@ -55,6 +55,18 @@ Gợi ý cấu hình ổn định trên VPS (tùy chọn):
 - Tăng retry cho lỗi driver (mặc định thêm 1 lần): `EXTRA_ATTEMPTS_ON_DRIVER_FAIL=1`
 - Nếu UC hay crash: thử `UC_USE_SUBPROCESS=false`
 
+Chạy "một lệnh" (Gemini → Worker → Pipeline):
+
+```bash
+./scripts/run_campaign.sh --input data/comments_thoitiet.xlsx --output data/comments_out.xlsx --flush-redis
+```
+
+Tuỳ chọn bật UC khi cần:
+
+```bash
+./scripts/run_campaign.sh --use-uc --input data/comments_thoitiet.xlsx --output data/comments_out.xlsx
+```
+
 ### Biến môi trường hữu ích
 
 | ENV | Mặc định | Ghi chú |

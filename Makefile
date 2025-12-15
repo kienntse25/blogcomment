@@ -1,4 +1,4 @@
-.PHONY := venv redis worker pipeline all
+.PHONY := venv redis worker pipeline campaign all
 
 VENV := .venv
 PY := $(VENV)/bin/python
@@ -19,5 +19,8 @@ worker:
 
 pipeline:
 	. $(VENV)/bin/activate && INPUT_XLSX=$(INPUT) OUTPUT_XLSX=$(OUTPUT) $(PY) push_jobs_from_excel.py
+
+campaign:
+	./scripts/run_campaign.sh --input $(INPUT) --output $(OUTPUT)
 
 all: redis worker
