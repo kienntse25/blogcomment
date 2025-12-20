@@ -35,6 +35,12 @@ bash scripts/vps.sh worker --concurrency 3 --queues camp_test
 bash scripts/vps.sh run --input data/comments_thoitiet.xlsx --output data/comments_out.xlsx --timeout 60 --flush-every 50 --resume-ok
 ```
 
+Không gắn anchor (chỉ dùng nội dung trong cột `Nội Dung`):
+
+```bash
+bash scripts/vps.sh run --no-anchor --input data/comments_thoitiet.xlsx --output data/comments_out.xlsx --timeout 60 --flush-every 50 --resume-ok
+```
+
 Tuỳ chọn dọn output trước khi chạy:
 
 ```bash

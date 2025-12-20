@@ -54,6 +54,7 @@ def _parse_list(raw: str | None) -> list[str]:
 FIND_TIMEOUT = _env_float("FIND_TIMEOUT", 8.0)           # Thời gian tìm field (s)
 AFTER_SUBMIT_PAUSE = _env_float("AFTER_SUBMIT_PAUSE", 2.0)  # Dừng lại sau khi submit (s)
 PAGE_LOAD_TIMEOUT = _env_int("PAGELOAD_TIMEOUT", 25)     # Timeout load trang (s)
+ATTACH_ANCHOR = _env_bool("ATTACH_ANCHOR", True)         # Có gắn anchor/website vào comment hay không
 
 # Log/DB
 SCRIPT_LOG = os.getenv("SCRIPT_LOG", "blog_comment_tool.log")

@@ -20,7 +20,7 @@ from selenium.common.exceptions import (
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-from .config import FIND_TIMEOUT, AFTER_SUBMIT_PAUSE, PAGE_LOAD_TIMEOUT, LANG_DETECT_MIN_CHARS
+from .config import FIND_TIMEOUT, AFTER_SUBMIT_PAUSE, PAGE_LOAD_TIMEOUT, LANG_DETECT_MIN_CHARS, ATTACH_ANCHOR
 
 DetectorFactory.seed = 0
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -403,11 +403,11 @@ def _detect_platform(html_text: str) -> str:
         return "wordpress"
     return "unknown"
 
-def _build_comment_text(base_text: str, anchor: str, website: str) -> str:
+def _build_comment_text(base_text: str, anchor: str, website: str, attach_anchor: bool = True) -> str:
     base = (base_text or "").strip()
     atext = (anchor or "").strip()
     site = (website or "").strip()
-    if atext and site:
+    if attach_anchor and atext and site:
         link = f'<a href="{html.escape(site, quote=True)}">{html.escape(atext)}</a>'
         # Nếu chưa có content, tạo content mặc định kèm anchor để vẫn có link report.
         if not base:
@@ -417,9 +417,11 @@ def _build_comment_text(base_text: str, anchor: str, website: str) -> str:
             return base.replace(atext, link, 1)
         return f"{base} {link}".strip()
 
-    # Nếu không có website nhưng có anchor, vẫn tạo content dựa theo anchor
-    if atext and not base:
-        return f"Thanks for the helpful article about {atext}!"
+    # Nếu không attach link, hoặc thiếu website: chỉ dùng base hoặc comment mặc định.
+    if not base:
+        if attach_anchor and atext:
+            return f"Thanks for the helpful article about {atext}!"
+        return "Thank you for the article!"
 
     return base or "Thank you for the article!"
 
@@ -441,6 +443,7 @@ def process_job(
     name = str(job.get("name", "")) or "Guest"
     email = str(job.get("email", "")) or ""
     website = str(job.get("website", "")) or ""
+    attach_anchor = bool(job.get("attach_anchor", ATTACH_ANCHOR))
     selectors = selectors or job.get("selectors") or None
     if selectors is not None and not isinstance(selectors, dict):
         selectors = None
@@ -533,7 +536,7 @@ def process_job(
         return False, "Cannot enter textarea iframe", ""
 
     # Điền nội dung
-    text_to_send = _build_comment_text(content, anchor, website)
+    text_to_send = _build_comment_text(content, anchor, website, attach_anchor=attach_anchor)
     _set_val(driver, ta, text_to_send)
 
     # Điền các field tùy chọn

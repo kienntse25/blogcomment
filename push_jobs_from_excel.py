@@ -217,6 +217,19 @@ def main():
         help="Tên queue Celery cho campaign (vd: camp_a). Nếu bỏ trống sẽ dùng queue mặc định.",
     )
     ap.add_argument(
+        "--attach-anchor",
+        dest="attach_anchor",
+        action="store_true",
+        default=(os.getenv("ATTACH_ANCHOR", "true").strip().lower() in {"1", "true", "yes", "on"}),
+        help="Gắn Anchor/Website vào comment (mặc định: ATTACH_ANCHOR=true).",
+    )
+    ap.add_argument(
+        "--no-attach-anchor",
+        dest="attach_anchor",
+        action="store_false",
+        help="Không gắn Anchor/Website vào comment (ghi đúng Nội Dung như trong file).",
+    )
+    ap.add_argument(
         "--resume-ok",
         action="store_true",
         help="Nếu output đã tồn tại, bỏ qua các URL có status=OK trong output (hữu ích khi crash/restart).",
@@ -317,6 +330,7 @@ def main():
             "content": str(row["Nội Dung"]).strip(),
             "name": str(row["Name"]).strip() or "Guest",
             "email": str(row["Email"]).strip(),
+            "attach_anchor": bool(args.attach_anchor),
         })
 
     if not jobs:

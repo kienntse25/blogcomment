@@ -8,7 +8,7 @@ usage() {
   cat <<'EOF'
 Usage:
   bash scripts/vps.sh worker [--concurrency N] [--queues Q1,Q2] [--loglevel info]
-  bash scripts/vps.sh run --input PATH --output PATH [--queue NAME] [--timeout SEC] [--flush-every N] [--resume-ok]
+  bash scripts/vps.sh run --input PATH --output PATH [--queue NAME] [--timeout SEC] [--flush-every N] [--resume-ok] [--no-anchor]
   bash scripts/vps.sh prefill --input PATH [--flush-every N] [--overwrite]
   bash scripts/vps.sh clean --output PATH
 
@@ -78,6 +78,7 @@ case "${cmd}" in
     timeout="${PAGELOAD_TIMEOUT:-}"
     flush_every="${PUSH_FLUSH_EVERY:-}"
     resume_ok=0
+    no_anchor=0
 
     while [[ $# -gt 0 ]]; do
       case "$1" in
@@ -87,6 +88,7 @@ case "${cmd}" in
         --timeout) timeout="$2"; shift 2 ;;
         --flush-every) flush_every="$2"; shift 2 ;;
         --resume-ok) resume_ok=1; shift 1 ;;
+        --no-anchor) no_anchor=1; shift 1 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown arg: $1" >&2; usage; exit 2 ;;
       esac
@@ -109,6 +111,9 @@ case "${cmd}" in
     fi
     if [[ "${resume_ok}" == "1" ]]; then
       args+=(--resume-ok)
+    fi
+    if [[ "${no_anchor}" == "1" ]]; then
+      args+=(--no-attach-anchor)
     fi
     python push_jobs_from_excel.py "${args[@]}"
     ;;
