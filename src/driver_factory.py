@@ -56,6 +56,9 @@ def _resolve_driver_path() -> str:
 def make_selenium_driver(proxy: Optional[str] = None):
     """Dùng Selenium chuẩn (sử dụng webdriver-manager để đảm bảo có chromedriver)."""
     opts = ChromeOptions()
+    pls = (os.getenv("PAGE_LOAD_STRATEGY") or "").strip().lower()
+    if pls in {"eager", "none", "normal"}:
+        opts.page_load_strategy = pls
     for f in _common_flags():
         opts.add_argument(f)
     # Binary path (tuỳ chọn)
@@ -74,6 +77,16 @@ def make_selenium_driver(proxy: Optional[str] = None):
     # Quan trọng cho macOS headless
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
+
+    # Optional: speed up by disabling images (helps on heavy pages)
+    if os.getenv("DISABLE_IMAGES", "false").strip().lower() in {"1", "true", "yes", "on"}:
+        prefs = {
+            "profile.managed_default_content_settings.images": 2,
+            "profile.default_content_setting_values.notifications": 2,
+            "profile.managed_default_content_settings.geolocation": 2,
+        }
+        opts.add_experimental_option("prefs", prefs)
+        opts.add_argument("--blink-settings=imagesEnabled=false")
 
     driver_path = _resolve_driver_path()
     service = ChromeService(executable_path=driver_path)
@@ -97,6 +110,9 @@ def make_uc_driver(proxy: Optional[str] = None):
         _clear_uc_cache()
 
     options = uc.ChromeOptions()
+    pls = (os.getenv("PAGE_LOAD_STRATEGY") or "").strip().lower()
+    if pls in {"eager", "none", "normal"}:
+        options.page_load_strategy = pls
     for f in _common_flags():
         options.add_argument(f)
 
@@ -110,6 +126,15 @@ def make_uc_driver(proxy: Optional[str] = None):
     ua = os.getenv("USER_AGENT")
     if ua:
         options.add_argument(f"--user-agent={ua}")
+
+    if os.getenv("DISABLE_IMAGES", "false").strip().lower() in {"1", "true", "yes", "on"}:
+        prefs = {
+            "profile.managed_default_content_settings.images": 2,
+            "profile.default_content_setting_values.notifications": 2,
+            "profile.managed_default_content_settings.geolocation": 2,
+        }
+        options.add_experimental_option("prefs", prefs)
+        options.add_argument("--blink-settings=imagesEnabled=false")
 
     # Một số site kén version, bạn có thể ép version chính của Chrome nếu biết (VD: 129)
     version_main = os.getenv("UC_VERSION_MAIN")

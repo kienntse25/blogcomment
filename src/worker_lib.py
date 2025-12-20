@@ -24,6 +24,8 @@ from .config import (
     ALLOWED_DOMAINS_FILE,
     SCREENSHOT_ON_FAIL,
     FAILSHOT_DIR,
+    PAGE_LOAD_STRATEGY,
+    DISABLE_IMAGES,
     PROXY_URL,
     PROXY_LIST,
     PROXY_FILE,
@@ -376,6 +378,11 @@ def _make_driver_uc(version_main: int = 0, proxy: str | None = None):
         return flags
 
     opts = uc.ChromeOptions()
+    try:
+        if PAGE_LOAD_STRATEGY in {"eager", "none", "normal"}:
+            opts.page_load_strategy = PAGE_LOAD_STRATEGY
+    except Exception:
+        pass
     for f in _common_flags():
         opts.add_argument(f)
     if HEADLESS:
@@ -386,6 +393,18 @@ def _make_driver_uc(version_main: int = 0, proxy: str | None = None):
     ua = os.getenv("USER_AGENT")
     if ua:
         opts.add_argument(f"--user-agent={ua}")
+
+    if DISABLE_IMAGES:
+        prefs = {
+            "profile.managed_default_content_settings.images": 2,
+            "profile.default_content_setting_values.notifications": 2,
+            "profile.managed_default_content_settings.geolocation": 2,
+        }
+        try:
+            opts.add_experimental_option("prefs", prefs)
+        except Exception:
+            pass
+        opts.add_argument("--blink-settings=imagesEnabled=false")
 
     if proxy:
         opts.add_argument(f"--proxy-server={proxy}")

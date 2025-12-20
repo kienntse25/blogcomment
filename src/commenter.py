@@ -20,7 +20,14 @@ from selenium.common.exceptions import (
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-from .config import FIND_TIMEOUT, AFTER_SUBMIT_PAUSE, PAGE_LOAD_TIMEOUT, LANG_DETECT_MIN_CHARS, ATTACH_ANCHOR
+from .config import (
+    FIND_TIMEOUT,
+    AFTER_SUBMIT_PAUSE,
+    PAGE_LOAD_TIMEOUT,
+    LANG_DETECT_MIN_CHARS,
+    ATTACH_ANCHOR,
+    COMMENT_FORM_WAIT_SEC,
+)
 
 DetectorFactory.seed = 0
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -390,6 +397,23 @@ def _find_textarea_in_comment_container(driver):
         return None
 
 
+def _wait_for_comment_textarea(driver, timeout_sec: float) -> Optional[object]:
+    """
+    Best-effort wait for lazy-loaded comment textarea near the bottom of the page.
+    Only checks main document (common WordPress case).
+    """
+    end = time.time() + max(0.0, float(timeout_sec))
+    while time.time() < end:
+        ta = _find_textarea_in_comment_container(driver)
+        if ta:
+            return ta
+        # Try to reveal/toggle + scroll again
+        _try_open_comment_form(driver)
+        _scroll_to_comment_area(driver)
+        time.sleep(0.3)
+    return None
+
+
 def detect_language(driver, fallback: str = "unknown") -> str:
     """
     Cố gắng phát hiện ngôn ngữ trang hiện tại. Trả về mã ISO-639-1 hoặc fallback.
@@ -591,11 +615,19 @@ def process_job(
             if candidate:
                 ta = candidate
                 ta_ifr = None
+        # Final wait for lazy-loaded comment form (configurable).
+        if not ta and COMMENT_FORM_WAIT_SEC and COMMENT_FORM_WAIT_SEC > 0:
+            _scroll_to_comment_area(driver)
+            ta = _wait_for_comment_textarea(driver, COMMENT_FORM_WAIT_SEC)
+            if ta:
+                ta_ifr = None
     if not ta:
         if login_hint and not toggled:
             return False, "Login required", ""
         if platform in platform_reasons:
             return False, platform_reasons.get(platform, "Comment box not found"), ""
+        if COMMENT_FORM_WAIT_SEC and COMMENT_FORM_WAIT_SEC > 0:
+            return False, f"Comment box not found (waited {COMMENT_FORM_WAIT_SEC:.0f}s)", ""
         return False, "Comment box not found", ""
 
     # Switch frame nếu textarea nằm trong iframe
@@ -603,6 +635,11 @@ def process_job(
         return False, "Cannot enter textarea iframe", ""
 
     # Điền nội dung
+    if os.getenv("STOP_LOADING_ON_FORM_FOUND", "false").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            driver.execute_script("window.stop();")
+        except Exception:
+            pass
     text_to_send = _build_comment_text(content, anchor, website, attach_anchor=attach_anchor)
     _set_val(driver, ta, text_to_send)
 

@@ -26,7 +26,15 @@ Mở 2 terminal:
 - Terminal 1 (worker):
 
 ```bash
-bash scripts/vps.sh worker --concurrency 3 --queues camp_test
+bash scripts/vps.sh worker --concurrency 3 --queues camp_test --pageload 60 --find-timeout 15 --comment-wait 25
+```
+
+Gợi ý tối ưu tốc độ (tuỳ chọn):
+
+```bash
+export PAGE_LOAD_STRATEGY=eager
+export DISABLE_IMAGES=true
+export STOP_LOADING_ON_FORM_FOUND=true
 ```
 
 - Terminal 2 (run 1 file):
@@ -199,6 +207,9 @@ Gợi ý: một số theme WordPress lazy-load phần comment ở cuối trang, 
 | `HEADLESS` | `true` | Tắt đi để debug bằng giao diện |
 | `MAX_ATTEMPTS` | `2` | Số lần retry mỗi URL |
 | `RETRY_DELAY_SEC` | `3.0` | Delay giữa các lần retry |
+| `PAGELOAD_TIMEOUT` | `25` | Timeout load trang (giây) |
+| `FIND_TIMEOUT` | `8.0` | Timeout tìm field (giây) |
+| `COMMENT_FORM_WAIT_SEC` | `12.0` | Chờ comment form render thêm (giây) nếu site lazy-load |
 | `RETRY_DRIVER_VERSIONS` | `0,141,140` | Danh sách uc major version fallback |
 | `REGISTRY_DB` | `data/registry.sqlite3` | Đường dẫn registry |
 | `PROXY_URL` | *(trống)* | Proxy cố định dạng `http://user:pass@host:port` |
