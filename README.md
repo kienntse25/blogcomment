@@ -190,6 +190,8 @@ Khi một URL fail ở lần attempt cuối, tool sẽ lưu:
 - `logs/failshots/<timestamp>_<host>.html`
 - `logs/failshots/<timestamp>_<host>.txt` (url + reason)
 
+Gợi ý: một số theme WordPress lazy-load phần comment ở cuối trang, tool sẽ tự scroll tới `#respond/#commentform/#comments` và thử mở form theo các từ khóa (EN/ES/PT/RU).
+
 ### Biến môi trường hữu ích
 
 | ENV | Mặc định | Ghi chú |

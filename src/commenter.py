@@ -32,7 +32,7 @@ def _dns_ok(u: str, timeout=5) -> Tuple[bool, str]:
         host = urlparse(u).hostname
         if not host:
             return False, "Invalid URL"
-        socket.setdefaulttimeout(timeout)
+        # Do not set global socket default timeout; keep this check best-effort.
         socket.getaddrinfo(host, None)
         return True, ""
     except Exception as e:
@@ -316,6 +316,12 @@ def _try_open_comment_form(driver) -> bool:
     js = """
     const keywords = [
       "comment", "reply", "leave a comment", "add comment", "add a comment",
+      "comments", "show comments", "view comments",
+      // Portuguese
+      "comentário", "comentarios", "comentar", "deixe um comentário", "deixe um comentario", "deixe seu comentário", "deixe seu comentario",
+      "responder", "resposta", "responda",
+      // Spanish
+      "comentario", "comentarios", "deja un comentario", "dejar un comentario", "responder",
       "коммент", "комментар", "ответить", "оставить комментарий",
       "написать комментарий", "добавить комментарий", "оставить ответ", "добавить ответ"
     ];
@@ -345,6 +351,43 @@ def _try_open_comment_form(driver) -> bool:
         raise
     except Exception:
         return False
+
+
+def _scroll_to_comment_area(driver) -> bool:
+    js = """
+    const el = document.querySelector(
+      '#respond, #commentform, #comments, .comment-respond, .comments-area, .comment-area'
+    );
+    if (!el) return false;
+    try { el.scrollIntoView({block:'start', inline:'nearest'}); } catch(e) {}
+    return true;
+    """
+    try:
+        return bool(driver.execute_script(js))
+    except InvalidSessionIdException:
+        raise
+    except Exception:
+        return False
+
+
+def _find_textarea_in_comment_container(driver):
+    """
+    Fast-path for WordPress-like pages: look for textarea inside common comment containers.
+    Returns the first textarea found (may be offscreen; we will scroll/reveal later).
+    """
+    js = """
+    const root = document.querySelector(
+      '#commentform, #respond, #comments, .comment-respond, .comments-area, .comment-area'
+    );
+    if (!root) return null;
+    return root.querySelector('textarea') || null;
+    """
+    try:
+        return driver.execute_script(js)
+    except InvalidSessionIdException:
+        raise
+    except Exception:
+        return None
 
 
 def detect_language(driver, fallback: str = "unknown") -> str:
@@ -451,9 +494,15 @@ def process_job(
     if not url:
         return False, "Empty URL", ""
 
+    # DNS precheck is best-effort. With HTTP(S) proxies, the proxy may resolve the host
+    # even if local DNS fails. So we do NOT hard-fail here; rely on driver.get outcome.
     okdns, why = _dns_ok(url)
     if not okdns:
-        return False, why or "DNS not resolved", ""
+        # Keep a hint for debugging, but continue.
+        try:
+            driver.execute_script("console.warn(arguments[0]);", why)
+        except Exception:
+            pass
 
     try:
         driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
@@ -472,7 +521,10 @@ def process_job(
         return False, f"WebDriver: {e.__class__.__name__}", ""
 
     _wait_body(driver)
-    _progressive_scroll(driver, steps=5, pause=0.3)
+    _progressive_scroll(driver, steps=6, pause=0.3)
+    # Some themes lazy-load comment form near the bottom; try jumping to comment area.
+    if _scroll_to_comment_area(driver):
+        time.sleep(0.4)
 
     # Detect platform
     html_text = ""
@@ -514,10 +566,25 @@ def process_job(
     if selectors:
         ta, ta_ifr = _find_with_selector(driver, selectors.get("ta_sel"), selectors.get("ta_iframe"))
     if not ta:
+        ta = _find_textarea_in_comment_container(driver)
+        if ta:
+            ta_ifr = None
+            _scroll_into_view(driver, ta)
+            time.sleep(0.1)
+    if not ta:
         ta, ta_ifr = _find_any_frame(driver, textarea_selectors, timeout=FIND_TIMEOUT)
     if not ta:
+        # WordPress often renders a container early; scroll there and retry a bit longer.
+        if platform == "wordpress":
+            _scroll_to_comment_area(driver)
+            end = time.time() + max(FIND_TIMEOUT, 10.0)
+            while time.time() < end and not ta:
+                ta, ta_ifr = _find_any_frame(driver, textarea_selectors, timeout=1.0)
+                if ta:
+                    break
+                time.sleep(0.2)
         toggled = _try_open_comment_form(driver)
-        _progressive_scroll(driver, steps=3, pause=0.4)
+        _progressive_scroll(driver, steps=4, pause=0.4)
         ta, ta_ifr = _find_any_frame(driver, textarea_selectors, timeout=FIND_TIMEOUT)
         if not ta:
             candidate = _reveal_hidden_textarea(driver) or _find_textarea_fallback(driver)

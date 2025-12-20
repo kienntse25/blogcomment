@@ -452,12 +452,14 @@ def _should_retry(reason: str) -> bool:
         return True
     reason_lower = reason.lower()
     fatal_tokens = (
+        "dns error",
+        "dns not resolved",
+        "name or service not known",
         "login",
         "captcha",
         "already attempted",
         "comment box not found",
         "no submit button",
-        "dns not resolved",
         "invalid url",
         "third-party",
         "requires login",
