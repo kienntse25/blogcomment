@@ -1,0 +1,22 @@
+[Unit]
+Description=Blog Comment Tool Campaign (%i)
+After=network-online.target redis-server.service
+Wants=redis-server.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ubuntu/blog-comment-tool
+EnvironmentFile=/home/ubuntu/blog-comment-tool/.env
+# Per-campaign env file (optional):
+#   /home/ubuntu/blog-comment-tool/deploy/campaigns/%i.env
+# Example content:
+#   INPUT_XLSX=data/comments_a.xlsx
+#   OUTPUT_XLSX=data/out_a.xlsx
+#   CELERY_QUEUE=camp_a
+#   PAGELOAD_TIMEOUT=60
+EnvironmentFile=-/home/ubuntu/blog-comment-tool/deploy/campaigns/%i.env
+ExecStart=/home/ubuntu/blog-comment-tool/.venv/bin/python /home/ubuntu/blog-comment-tool/push_jobs_from_excel.py --input ${INPUT_XLSX} --output ${OUTPUT_XLSX} --queue ${CELERY_QUEUE} --limit 0 --resume-ok
+
+[Install]
+WantedBy=multi-user.target
+

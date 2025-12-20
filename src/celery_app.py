@@ -18,11 +18,8 @@ celery.conf.update(
     timezone="Asia/Ho_Chi_Minh",
     enable_utc=False,
 
-    # Queue mặc định
+    # Queue mặc định (có thể override theo campaign bằng apply_async(queue=...))
     task_default_queue="camp_test",
-    task_routes={
-        "run_comment": {"queue": "camp_test", "routing_key": "camp_test"},
-    },
 
     # Serializer: dùng JSON để an toàn hơn (tránh pickle) và cho phép chạy worker không cần C_FORCE_ROOT.
     task_serializer="json",

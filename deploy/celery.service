@@ -6,7 +6,10 @@ After=network-online.target redis-server.service
 Type=simple
 WorkingDirectory=/home/ubuntu/blog-comment-tool
 EnvironmentFile=/home/ubuntu/blog-comment-tool/.env
-ExecStart=/home/ubuntu/blog-comment-tool/.venv/bin/celery -A src.tasks worker --loglevel=info
+# Suggested:
+#   CELERY_CONCURRENCY=3
+#   CELERY_QUEUES=camp_a,camp_b
+ExecStart=/usr/bin/env bash /home/ubuntu/blog-comment-tool/scripts/run_worker.sh
 Restart=on-failure
 RestartSec=5
 

@@ -4,6 +4,7 @@ import time
 import argparse
 import logging
 import re
+import unicodedata
 import pandas as pd
 import google.generativeai as genai
 from logging import getLogger
@@ -27,6 +28,32 @@ def configure_gemini_api():
         return False
 
 
+def _normalize_header(text: str) -> str:
+    if text is None:
+        return ""
+    txt = unicodedata.normalize("NFKD", str(text))
+    txt = "".join(ch for ch in txt if not unicodedata.combining(ch))
+    txt = txt.lower()
+    txt = re.sub(r"[^a-z0-9]+", "", txt)
+    return txt
+
+
+def _resolve_column(df: pd.DataFrame, desired: str, aliases: list[str] | None = None) -> str | None:
+    aliases = aliases or []
+    norm_to_original: dict[str, str] = {}
+    for col in df.columns:
+        norm = _normalize_header(col)
+        if norm and norm not in norm_to_original:
+            norm_to_original[norm] = col
+
+    candidates = [_normalize_header(desired)]
+    candidates.extend(_normalize_header(a) for a in aliases)
+    for c in candidates:
+        if c in norm_to_original:
+            return norm_to_original[c]
+    return None
+
+
 def generate_content_from_excel(
     file_path: str,
     keyword_col: str = "Anchor",
@@ -40,47 +67,65 @@ def generate_content_from_excel(
     """
     if not os.path.exists(file_path):
         log.error(f"File không tồn tại: {file_path}")
-        return
+        return -1
 
     if not configure_gemini_api():
-        return
+        return -1
 
     log.info(f"Đang đọc file Excel: {file_path}")
     try:
         df = pd.read_excel(file_path, engine="openpyxl")
     except Exception as e:
         log.error(f"Không thể đọc file Excel: {e}")
-        return
+        return -1
 
-    if keyword_col not in df.columns:
-        log.error(f"Không tìm thấy cột '{keyword_col}' trong file Excel.")
-        return
-    if content_col not in df.columns:
-        log.error(f"Không tìm thấy cột '{content_col}' trong file Excel.")
-        return
-    if website_col and website_col not in df.columns:
-        log.warning(f"Không tìm thấy cột '{website_col}' trong file Excel. Sẽ tạo content không kèm website.")
+    keyword_col_actual = _resolve_column(df, keyword_col, aliases=["keyword", "anchor"])
+    if not keyword_col_actual:
+        log.error(f"Không tìm thấy cột '{keyword_col}' trong file Excel. Columns={list(df.columns)}")
+        return -1
+
+    content_col_actual = _resolve_column(
+        df,
+        content_col,
+        aliases=[
+            "noi dung",
+            "noi_dung",
+            "content",
+            "comment",
+            "noi dung comment",
+            "noi dung binh luan",
+        ],
+    )
+    if not content_col_actual:
+        log.error(f"Không tìm thấy cột '{content_col}' trong file Excel. Columns={list(df.columns)}")
+        return -1
+
+    website_col_actual: str | None = None
+    if website_col:
+        website_col_actual = _resolve_column(df, website_col, aliases=["site", "web", "website url"])
+        if not website_col_actual:
+            log.warning(f"Không tìm thấy cột '{website_col}' trong file Excel. Sẽ tạo content không kèm website.")
 
     # 1. Thu thập các keywords và chỉ số dòng tương ứng
     tasks = []
     for index, row in df.iterrows():
-        keyword_val = row.get(keyword_col)
-        existing = row.get(content_col)
+        keyword_val = row.get(keyword_col_actual)
+        existing = row.get(content_col_actual)
         if only_if_empty and existing and not pd.isna(existing) and str(existing).strip():
             continue
         # Bỏ qua các giá trị rỗng hoặc NaN (Not a Number) từ Excel
         if keyword_val and not pd.isna(keyword_val):
             keyword = str(keyword_val).strip()
             website = ""
-            if website_col and website_col in df.columns:
-                website_val = row.get(website_col)
+            if website_col_actual:
+                website_val = row.get(website_col_actual)
                 if website_val and not pd.isna(website_val):
                     website = str(website_val).strip()
             tasks.append({"index": index, "keyword": keyword, "website": website})
 
     if not tasks:
         log.warning("Không có keyword nào hợp lệ để tạo nội dung.")
-        return
+        return 0
 
     log.info(f"Tìm thấy {len(tasks)} dòng cần tạo nội dung. Bắt đầu tạo nội dung bằng Gemini...")
 
@@ -117,23 +162,16 @@ def generate_content_from_excel(
             "Do not be spammy. No emojis. ",
         )
         prompt = prompt_tpl.format(anchor=keyword, website=website)
-        attempts = 0
-        while True:
-            attempts += 1
+        generated_content = ""
+        for attempt in range(1, 4):
             try:
                 response = model.generate_content(prompt)
-                generated_content = (response.text or "").strip()
-                if generated_content:
-                    results_to_update.append({"index": task["index"], "content": generated_content})
+                generated_content = (getattr(response, "text", "") or "").strip()
                 request_count += 1
-                log.info(f"Đã tạo nội dung cho keyword: '{keyword}'")
-                if min_delay:
-                    time.sleep(min_delay)
                 break
             except Exception as e:
                 msg = str(e)
-                log.error(f"Lỗi khi tạo nội dung cho keyword '{keyword}': {msg}")
-                # Respect server-provided retry delay if present (common for 429 quota).
+                log.error(f"Lỗi khi tạo nội dung cho keyword '{keyword}' (attempt {attempt}/3): {msg}")
                 m = _RETRY_IN_RE.search(msg)
                 if m:
                     try:
@@ -142,24 +180,29 @@ def generate_content_from_excel(
                         delay = 5.0
                 else:
                     delay = 5.0
-                if attempts >= 3:
-                    log.warning(f"Bỏ qua keyword '{keyword}' sau {attempts} lần lỗi.")
+                if attempt >= 3:
+                    log.warning(f"Bỏ qua keyword '{keyword}' sau {attempt} lần lỗi.")
                     break
                 log.info(f"Tạm nghỉ {delay:.1f} giây rồi thử lại keyword này...")
                 time.sleep(delay)
 
-                # success path: persist immediately (or every N rows) so progress is not lost
-                if generated_content:
-                    df.loc[task["index"], content_col] = generated_content
-                    updated += 1
-                    if updated % flush_every == 0:
-                        _save_atomic()
-                        log.info(f"Đã lưu tạm {file_path} (updated={updated})")
+        if not generated_content:
+            continue
+
+        df.loc[task["index"], content_col_actual] = generated_content
+        updated += 1
+        log.info(f"Đã tạo nội dung cho keyword: '{keyword}'")
+        if updated % flush_every == 0:
+            _save_atomic()
+            log.info(f"Đã lưu tạm {file_path} (updated={updated})")
+        if min_delay:
+            time.sleep(min_delay)
 
     # Final flush (if needed)
     if updated % flush_every != 0:
         _save_atomic()
     log.info(f"Hoàn tất. Đã cập nhật {updated} dòng vào: {file_path}")
+    return updated
 
 
 def main() -> int:
@@ -179,14 +222,14 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     os.environ["GEMINI_FLUSH_EVERY"] = str(max(1, int(args.flush_every)))
-    generate_content_from_excel(
+    updated = generate_content_from_excel(
         file_path=args.input,
         keyword_col=args.anchor_col,
         website_col=args.website_col,
         content_col=args.content_col,
         only_if_empty=not args.overwrite,
     )
-    return 0
+    return 0 if updated >= 0 else 1
 
 
 if __name__ == "__main__":

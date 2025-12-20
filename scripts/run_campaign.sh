@@ -10,6 +10,11 @@ USE_UC="${USE_UC:-false}"
 FLUSH_REDIS=0
 CLEAN_OUTPUT=0
 CONCURRENCY="${CELERY_CONCURRENCY:-2}"
+QUEUE="${CELERY_QUEUE:-}"
+SKIP_GEMINI=0
+REQUIRE_GEMINI=0
+GEMINI_FLUSH_EVERY="${GEMINI_FLUSH_EVERY:-10}"
+RESUME_OK=0
 
 usage() {
   cat <<'EOF'
@@ -18,6 +23,11 @@ Usage: scripts/run_campaign.sh [options]
 Options:
   --input PATH         Excel input (default: data/comments.xlsx)
   --output PATH        Excel output (default: data/comments_out.xlsx)
+  --queue NAME         Campaign queue (default: env CELERY_QUEUE or camp_test)
+  --resume-ok          Skip URLs already OK in output
+  --skip-gemini        Skip Gemini prefill step
+  --require-gemini     Fail if Gemini prefill fails
+  --gemini-flush-every N  Save Excel after every N generated rows (default: env GEMINI_FLUSH_EVERY or 10)
   --no-worker          Don't start Celery worker (assume it's already running)
   --use-uc             Enable undetected-chromedriver for worker (USE_UC=true)
   --flush-redis        FLUSHALL before running (clears old tasks)
@@ -36,6 +46,11 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --input) INPUT="$2"; shift 2 ;;
     --output) OUTPUT="$2"; shift 2 ;;
+    --queue) QUEUE="$2"; shift 2 ;;
+    --resume-ok) RESUME_OK=1; shift 1 ;;
+    --skip-gemini) SKIP_GEMINI=1; shift 1 ;;
+    --require-gemini) REQUIRE_GEMINI=1; shift 1 ;;
+    --gemini-flush-every) GEMINI_FLUSH_EVERY="$2"; shift 2 ;;
     --no-worker) START_WORKER=0; shift 1 ;;
     --use-uc) USE_UC=true; shift 1 ;;
     --flush-redis) FLUSH_REDIS=1; shift 1 ;;
@@ -88,9 +103,24 @@ if [[ "${FLUSH_REDIS}" == "1" ]]; then
 fi
 
 export USE_UC="${USE_UC}"
+if [[ -z "${QUEUE}" ]]; then
+  QUEUE="camp_test"
+fi
+export CELERY_QUEUE="${QUEUE}"
 
-echo "[campaign] Gemini prefill -> ${INPUT}"
-python -m src.generative_ai --input "${INPUT}" || true
+if [[ "${SKIP_GEMINI}" == "1" ]]; then
+  echo "[campaign] Skip Gemini prefill"
+else
+  echo "[campaign] Gemini prefill -> ${INPUT} (flush_every=${GEMINI_FLUSH_EVERY})"
+  export GEMINI_FLUSH_EVERY
+  if ! python -m src.generative_ai --input "${INPUT}"; then
+    if [[ "${REQUIRE_GEMINI}" == "1" ]]; then
+      echo "[campaign] Gemini prefill failed; aborting because --require-gemini is set" >&2
+      exit 1
+    fi
+    echo "[campaign] Gemini prefill failed; continuing (set --require-gemini to stop on errors)" >&2
+  fi
+fi
 
 WORKER_PID=""
 cleanup() {
@@ -103,13 +133,17 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ "${START_WORKER}" == "1" ]]; then
-  echo "[campaign] Starting worker (concurrency=${CONCURRENCY}, USE_UC=${USE_UC})"
-  celery -A src.tasks worker --loglevel=info --concurrency="${CONCURRENCY}" &
+  echo "[campaign] Starting worker (queue=${QUEUE}, concurrency=${CONCURRENCY}, USE_UC=${USE_UC})"
+  celery -A src.tasks worker --loglevel=info --concurrency="${CONCURRENCY}" -Q "${QUEUE}" &
   WORKER_PID="$!"
   sleep 2
 fi
 
-echo "[campaign] Pipeline -> input=${INPUT} output=${OUTPUT}"
-python push_jobs_from_excel.py --input "${INPUT}" --output "${OUTPUT}" --limit 0
+echo "[campaign] Pipeline -> input=${INPUT} output=${OUTPUT} queue=${QUEUE}"
+PIPE_ARGS=(--input "${INPUT}" --output "${OUTPUT}" --queue "${QUEUE}" --limit 0)
+if [[ "${RESUME_OK}" == "1" ]]; then
+  PIPE_ARGS+=(--resume-ok)
+fi
+python push_jobs_from_excel.py "${PIPE_ARGS[@]}"
 
 echo "[campaign] Done: ${OUTPUT}"

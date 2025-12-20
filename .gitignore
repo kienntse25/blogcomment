@@ -35,6 +35,7 @@ data/comments_out.xlsx
 data/registry.sqlite3
 push_jobs.log
 google-chrome-stable_current_amd64.deb*
+data/allowed_domains.txt
 
 # Secrets
 .env

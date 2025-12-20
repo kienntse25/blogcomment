@@ -11,12 +11,19 @@ from urllib.parse import urlparse
 from selenium.common.exceptions import InvalidSessionIdException
 from urllib3.exceptions import ProtocolError, ReadTimeoutError
 from http.client import RemoteDisconnected
+from pathlib import Path
+import re
 
 from .config import (
     HEADLESS,
     RETRY_DRIVER_VERSIONS,
     MAX_ATTEMPTS,
     RETRY_DELAY_SEC,
+    RESPECT_ROBOTS,
+    USER_AGENT,
+    ALLOWED_DOMAINS_FILE,
+    SCREENSHOT_ON_FAIL,
+    FAILSHOT_DIR,
     PROXY_URL,
     PROXY_LIST,
     PROXY_FILE,
@@ -29,6 +36,8 @@ from .config import (
 from .registry import was_seen, mark_seen
 from . import commenter
 from .driver_factory import make_selenium_driver
+from .utils.allowlist import is_url_allowed
+from .utils.robots import is_allowed as robots_allowed
 
 log = logging.getLogger("worker_lib")
 
@@ -36,6 +45,55 @@ _FILE_PROXY_CACHE: list[str] | None = None
 _FILE_PROXY_MTIME: float | None = None
 _XLSX_PROXY_CACHE: list[str] | None = None
 _XLSX_PROXY_MTIME: float | None = None
+_SAN_RE = re.compile(r"[^a-zA-Z0-9._-]+")
+
+
+def _sanitize_filename(text: str) -> str:
+    s = _SAN_RE.sub("_", (text or "").strip())
+    return s[:120] if s else "unknown"
+
+
+def _save_fail_artifacts(driver, url: str, reason: str) -> dict[str, str]:
+    """
+    Save screenshot + HTML for debugging (optional).
+    Returns {"screenshot": path, "html": path} (may be empty).
+    """
+    if not SCREENSHOT_ON_FAIL:
+        return {}
+    try:
+        Path(FAILSHOT_DIR).mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return {}
+
+    host = ""
+    try:
+        host = (urlparse(url).netloc or "").split("@")[-1]
+    except Exception:
+        host = ""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    base = f"{stamp}_{_sanitize_filename(host)}"
+
+    out: dict[str, str] = {}
+    png = str(Path(FAILSHOT_DIR) / f"{base}.png")
+    htmlp = str(Path(FAILSHOT_DIR) / f"{base}.html")
+    metap = str(Path(FAILSHOT_DIR) / f"{base}.txt")
+    try:
+        driver.save_screenshot(png)
+        out["screenshot"] = png
+    except Exception:
+        pass
+    try:
+        src = driver.page_source or ""
+        Path(htmlp).write_text(src, encoding="utf-8", errors="ignore")
+        out["html"] = htmlp
+    except Exception:
+        pass
+    try:
+        Path(metap).write_text(f"url={url}\nreason={reason}\n", encoding="utf-8", errors="ignore")
+        out["meta"] = metap
+    except Exception:
+        pass
+    return out
 
 
 def _load_proxies_from_file() -> list[str]:
@@ -430,6 +488,28 @@ def run_one_link(job: dict) -> dict:
             "attempts": 0,
         }
 
+    # Optional guardrails: allowlist + robots.txt (for controlled/authorized environments).
+    if ALLOWED_DOMAINS_FILE and not is_url_allowed(url):
+        return {
+            "url": url,
+            "status": "FAILED",
+            "reason": f"Not allowed by allowlist ({ALLOWED_DOMAINS_FILE})",
+            "comment_link": "",
+            "duration_sec": 0.0,
+            "language": "unknown",
+            "attempts": 0,
+        }
+    if RESPECT_ROBOTS and not robots_allowed(url, USER_AGENT):
+        return {
+            "url": url,
+            "status": "FAILED",
+            "reason": "Disallowed by robots.txt",
+            "comment_link": "",
+            "duration_sec": 0.0,
+            "language": "unknown",
+            "attempts": 0,
+        }
+
     # Không SKIP theo registry: link nào được paste thì luôn thử chạy.
 
     attempts = 0
@@ -479,6 +559,10 @@ def run_one_link(job: dict) -> dict:
 
             if ok:
                 break
+            if attempt == max_attempts:
+                arts = _save_fail_artifacts(driver, url, rsn)
+                if arts:
+                    log.info("[worker_lib] Saved fail artifacts for %s: %s", url, arts)
 
             if not _should_retry(rsn) or attempt == max_attempts:
                 break

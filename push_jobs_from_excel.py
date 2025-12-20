@@ -19,6 +19,24 @@ COLUMN_ALIASES = {
 }
 RESULT_COLUMNS = ["url", "status", "reason", "comment_link", "duration_sec", "language", "attempts"]
 
+# Output (merged) columns for easy filtering in Excel
+OUT_STATUS_COL = "Status"
+OUT_REASON_COL = "Reason"
+OUT_COMMENT_LINK_COL = "Comment Link"
+OUT_DURATION_COL = "Duration (sec)"
+OUT_LANGUAGE_COL = "Language"
+OUT_ATTEMPTS_COL = "Attempts"
+OUT_UPDATED_AT_COL = "Updated At"
+OUT_EXTRA_COLUMNS = [
+    OUT_STATUS_COL,
+    OUT_REASON_COL,
+    OUT_COMMENT_LINK_COL,
+    OUT_DURATION_COL,
+    OUT_LANGUAGE_COL,
+    OUT_ATTEMPTS_COL,
+    OUT_UPDATED_AT_COL,
+]
+
 # Đọc Excel (đảm bảo tồn tại)
 def _read_df(path):
     if not os.path.exists(path):
@@ -87,6 +105,103 @@ def _standardize_columns(df: pd.DataFrame) -> tuple[pd.DataFrame | None, list[st
 
     return df, []
 
+
+def _load_existing_progress(output_path: str) -> tuple[pd.DataFrame | None, set[str]]:
+    """
+    Return (existing_out_df, ok_urls) if output exists.
+    Supports:
+      - merged output (has URL + Status)
+      - old results-only output (has url + status)
+    """
+    if not os.path.exists(output_path):
+        return None, set()
+    try:
+        ex = pd.read_excel(output_path, engine="openpyxl").fillna("")
+    except Exception:
+        return None, set()
+
+    ok_urls: set[str] = set()
+
+    cols = {str(c).strip(): c for c in ex.columns}
+    if "URL" in cols and (OUT_STATUS_COL in cols or "status" in cols or "Status" in cols):
+        status_col = cols.get(OUT_STATUS_COL) or cols.get("Status") or cols.get("status")
+        for _, r in ex.iterrows():
+            u = str(r.get(cols["URL"], "")).strip()
+            st = str(r.get(status_col, "")).strip().upper()
+            if u and st == "OK":
+                ok_urls.add(u)
+        return ex, ok_urls
+
+    # results-only legacy
+    if "url" in cols and "status" in cols:
+        for _, r in ex.iterrows():
+            u = str(r.get(cols["url"], "")).strip()
+            st = str(r.get(cols["status"], "")).strip().upper()
+            if u and st == "OK":
+                ok_urls.add(u)
+        return ex, ok_urls
+
+    return ex, ok_urls
+
+
+def _overlay_existing_into_output(
+    out_df: pd.DataFrame, input_df: pd.DataFrame, existing_df: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Best-effort: preserve prior progress if output already exists.
+    - If existing is merged output and aligns by row index (same len and URL per row), copy extra columns.
+    - If existing is results-only, map by URL and fill extra columns.
+    """
+    if existing_df is None or existing_df.empty:
+        return out_df
+
+    ex_cols = {str(c).strip(): c for c in existing_df.columns}
+    if "URL" in ex_cols and len(existing_df) == len(input_df):
+        # Ensure per-row URL matches (at least for the first 50 non-empty).
+        ok_align = 0
+        checked = 0
+        for i in range(min(len(input_df), 50)):
+            u_in = str(input_df.iloc[i].get("URL", "")).strip()
+            u_ex = str(existing_df.iloc[i].get(ex_cols["URL"], "")).strip()
+            if not u_in and not u_ex:
+                continue
+            checked += 1
+            if u_in == u_ex:
+                ok_align += 1
+        if checked == 0 or ok_align / checked >= 0.9:
+            for col in OUT_EXTRA_COLUMNS:
+                if col in ex_cols:
+                    out_df[col] = existing_df[ex_cols[col]]
+            return out_df
+
+    # Legacy results-only: map by URL (supports duplicates by consuming in order)
+    if "url" in ex_cols and "status" in ex_cols:
+        buckets: dict[str, list[dict]] = {}
+        for _, r in existing_df.iterrows():
+            u = str(r.get(ex_cols["url"], "")).strip()
+            if not u:
+                continue
+            buckets.setdefault(u, []).append(
+                {
+                    OUT_STATUS_COL: str(r.get(ex_cols.get("status"), "")).strip(),
+                    OUT_REASON_COL: str(r.get(ex_cols.get("reason"), "")).strip(),
+                    OUT_COMMENT_LINK_COL: str(r.get(ex_cols.get("comment_link"), "")).strip(),
+                    OUT_DURATION_COL: r.get(ex_cols.get("duration_sec"), ""),
+                    OUT_LANGUAGE_COL: str(r.get(ex_cols.get("language"), "")).strip(),
+                    OUT_ATTEMPTS_COL: r.get(ex_cols.get("attempts"), ""),
+                }
+            )
+        for idx, row in out_df.iterrows():
+            u = str(row.get("URL", "")).strip()
+            if not u or u not in buckets or not buckets[u]:
+                continue
+            v = buckets[u].pop(0)
+            for k, val in v.items():
+                out_df.at[idx, k] = val
+        return out_df
+
+    return out_df
+
 def _sync_one(job: dict) -> dict:
     # Chạy trực tiếp không cần Celery (để test ra file out ngay)
     from src.worker_lib import run_one_link
@@ -96,6 +211,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", default=_default_input_path(), help="Đường dẫn file Excel input")
     ap.add_argument("--output", default=_default_output_path(), help="Đường dẫn file Excel output")
+    ap.add_argument(
+        "--queue",
+        default=(os.getenv("CELERY_QUEUE") or "").strip() or None,
+        help="Tên queue Celery cho campaign (vd: camp_a). Nếu bỏ trống sẽ dùng queue mặc định.",
+    )
+    ap.add_argument(
+        "--resume-ok",
+        action="store_true",
+        help="Nếu output đã tồn tại, bỏ qua các URL có status=OK trong output (hữu ích khi crash/restart).",
+    )
     ap.add_argument(
         "--limit",
         type=int,
@@ -127,7 +252,8 @@ def main():
     ap.add_argument("--sync-one", action="store_true", help="Chạy 1 dòng đầu không cần Celery")
     args = ap.parse_args()
 
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
+    out_dir = os.path.dirname(args.output) or "."
+    os.makedirs(out_dir, exist_ok=True)
     timeouts_output = args.timeouts_output or _default_timeouts_output_path(args.output)
     timeout_token = str(args.timeout_reason_substr or "").strip().lower()
 
@@ -139,25 +265,40 @@ def main():
     logging.info(f"Input: {args.input}")
     logging.info(f"Output: {args.output}")
     logging.info(f"Timeouts output: {timeouts_output}")
+    logging.info("Output mode: merged (input columns + result columns)")
 
     # Đọc input
     try:
         df = _read_df(args.input)
     except Exception as e:
         logging.error(f"Không thể đọc Excel: {e}")
-        pd.DataFrame(columns=RESULT_COLUMNS).to_excel(args.output, index=False)
+        pd.DataFrame(columns=REQUIRED_COLUMNS + OUT_EXTRA_COLUMNS).to_excel(args.output, index=False)
         return
 
     # Bắt buộc header (chấp nhận alias, không phân biệt hoa thường/dấu)
     df, miss = _standardize_columns(df)
     if miss:
         logging.error(f"Thiếu cột {miss}. Yêu cầu header: {REQUIRED_COLUMNS}")
-        pd.DataFrame(columns=RESULT_COLUMNS).to_excel(args.output, index=False)
+        pd.DataFrame(columns=REQUIRED_COLUMNS + OUT_EXTRA_COLUMNS).to_excel(args.output, index=False)
         return
+
+    done_ok: set[str] = set()
+    existing_out, ok_urls = _load_existing_progress(args.output)
+    if args.resume_ok and ok_urls:
+        done_ok = set(ok_urls)
+    if done_ok:
+        logging.info(f"[resume] Sẽ bỏ qua {len(done_ok)} URL đã OK trong {args.output}")
+
+    # Prepare merged output frame (same row count as input) and preserve previous progress if any.
+    out_merged = df.copy()
+    for col in OUT_EXTRA_COLUMNS:
+        if col not in out_merged.columns:
+            out_merged[col] = ""
+    if existing_out is not None:
+        out_merged = _overlay_existing_into_output(out_merged, df, existing_out)
 
     # Tạo jobs
     jobs=[]
-    job_by_url: dict[str, dict] = {}
     max_jobs = args.limit if args.limit and args.limit > 0 else None
     for i, row in df.iterrows():
         if max_jobs is not None and len(jobs) >= max_jobs:
@@ -166,7 +307,10 @@ def main():
         if not url:
             logging.warning(f"Dòng {i+2} URL trống → bỏ qua")
             continue
+        if done_ok and url in done_ok:
+            continue
         jobs.append({
+            "__row": int(i),
             "url": url,
             "anchor": str(row["Anchor"]).strip(),
             "website": str(row["Website"]).strip(),
@@ -174,18 +318,25 @@ def main():
             "name": str(row["Name"]).strip() or "Guest",
             "email": str(row["Email"]).strip(),
         })
-        job_by_url[url] = jobs[-1]
 
     if not jobs:
         logging.warning("Không có job hợp lệ.")
-        pd.DataFrame(columns=RESULT_COLUMNS).to_excel(args.output, index=False)
+        out_merged.to_excel(args.output, index=False)
         return
 
     # Test nhanh 1 dòng (không Celery)
     if args.sync_one:
         logging.info("[SYNC-ONE] chạy 1 job không Celery để kiểm tra end-to-end")
-        res = _sync_one(jobs[0])
-        pd.DataFrame([res]).to_excel(args.output, index=False)
+        res = _sync_one({k: v for k, v in jobs[0].items() if k != "__row"})
+        i = jobs[0]["__row"]
+        out_merged.at[i, OUT_STATUS_COL] = str(res.get("status", "")).strip()
+        out_merged.at[i, OUT_REASON_COL] = str(res.get("reason", "")).strip()
+        out_merged.at[i, OUT_COMMENT_LINK_COL] = str(res.get("comment_link", "")).strip()
+        out_merged.at[i, OUT_DURATION_COL] = res.get("duration_sec", "")
+        out_merged.at[i, OUT_LANGUAGE_COL] = str(res.get("language", "")).strip()
+        out_merged.at[i, OUT_ATTEMPTS_COL] = res.get("attempts", "")
+        out_merged.at[i, OUT_UPDATED_AT_COL] = time.strftime("%Y-%m-%d %H:%M:%S")
+        out_merged.to_excel(args.output, index=False)
         logging.info(f"Đã ghi {args.output}")
         return
 
@@ -200,17 +351,19 @@ def main():
     tasks=[]
     for j in jobs:
         try:
-            ar = run_comment.delay(j)
+            if args.queue:
+                ar = run_comment.apply_async(args=[{k: v for k, v in j.items() if k != "__row"}], queue=args.queue, routing_key=args.queue)
+            else:
+                ar = run_comment.delay({k: v for k, v in j.items() if k != "__row"})
             tasks.append((j, ar))
-            logging.info(f"Đã gửi task cho URL: {j['url']}")
+            logging.info(f"Đã gửi task cho URL: {j['url']} (queue={args.queue or 'default'})")
         except Exception as e:
             logging.error(f"Gửi task lỗi {j['url']}: {e}")
 
     logging.info("Đang chờ kết quả từ các task...")
-    results=[]
-    timeout_jobs: list[dict] = []
+    timeout_rows: set[int] = set()
     flush_every = max(1, int(args.flush_every))
-    last_flushed = 0
+    finished = 0
     poll_interval = 0.5
 
     # Chờ theo kiểu "as completed": tránh bị kẹt ở 1 task chậm/treo, và ghi output dần theo tiến độ.
@@ -227,57 +380,44 @@ def main():
                     out = ar.get(timeout=1)
                 except Exception as e:
                     out = {"url": j["url"], "status":"FAILED", "reason":f"No result/timeout: {e}", "comment_link":"", "duration_sec":0.0}
-                results.append(out)
+                row_i = int(j.get("__row", -1))
+                if row_i >= 0:
+                    out_merged.at[row_i, OUT_STATUS_COL] = str((out or {}).get("status", "")).strip()
+                    out_merged.at[row_i, OUT_REASON_COL] = str((out or {}).get("reason", "")).strip()
+                    out_merged.at[row_i, OUT_COMMENT_LINK_COL] = str((out or {}).get("comment_link", "")).strip()
+                    out_merged.at[row_i, OUT_DURATION_COL] = (out or {}).get("duration_sec", "")
+                    out_merged.at[row_i, OUT_LANGUAGE_COL] = str((out or {}).get("language", "")).strip()
+                    out_merged.at[row_i, OUT_ATTEMPTS_COL] = (out or {}).get("attempts", "")
+                    out_merged.at[row_i, OUT_UPDATED_AT_COL] = time.strftime("%Y-%m-%d %H:%M:%S")
                 try:
                     reason = str((out or {}).get("reason", "")).lower()
                 except Exception:
                     reason = ""
                 if timeout_token and timeout_token in reason:
-                    src_job = job_by_url.get(j["url"])
-                    if src_job:
-                        timeout_jobs.append(src_job)
+                    if row_i >= 0:
+                        timeout_rows.add(row_i)
                 pending[i] = pending[-1]
                 pending.pop()
                 progressed = True
-                if len(results) - last_flushed >= flush_every:
-                    pd.DataFrame(results, columns=RESULT_COLUMNS).to_excel(args.output, index=False)
-                    last_flushed = len(results)
-                    logging.info(f"Đã ghi tạm {args.output} ({last_flushed} dòng).")
-                    if timeout_jobs:
-                        pd.DataFrame(timeout_jobs, columns=["url", "anchor", "website", "content", "name", "email"]).rename(
-                            columns={
-                                "url": "URL",
-                                "anchor": "Anchor",
-                                "website": "Website",
-                                "content": "Nội Dung",
-                                "name": "Name",
-                                "email": "Email",
-                            }
-                        ).to_excel(timeouts_output, index=False)
-                        logging.info(f"Đã ghi tạm {timeouts_output} ({len(timeout_jobs)} dòng timeouts).")
+                finished += 1
+                if finished % flush_every == 0:
+                    out_merged.to_excel(args.output, index=False)
+                    logging.info(f"Đã ghi tạm {args.output} (done={finished}).")
+                    if timeout_rows:
+                        df.loc[sorted(timeout_rows), REQUIRED_COLUMNS].to_excel(timeouts_output, index=False)
+                        logging.info(f"Đã ghi tạm {timeouts_output} ({len(timeout_rows)} dòng timeouts).")
             i -= 1
 
         if not progressed:
             # Nếu quá lâu không có task nào xong, vẫn tiếp tục chờ (giữ tốc độ poll vừa phải)
             time.sleep(poll_interval)
 
-    if not results:
-        results=[{"url":"", "status":"FAILED", "reason":"No tasks executed", "comment_link":"", "duration_sec":0.0, "language":"unknown", "attempts":0}]
-    pd.DataFrame(results, columns=RESULT_COLUMNS).to_excel(args.output, index=False)
-    logging.info(f"Đã ghi {args.output} ({len(results)} dòng).")
+    out_merged.to_excel(args.output, index=False)
+    logging.info(f"Đã ghi {args.output} (total_rows={len(out_merged)}).")
 
-    if timeout_jobs:
-        pd.DataFrame(timeout_jobs, columns=["url", "anchor", "website", "content", "name", "email"]).rename(
-            columns={
-                "url": "URL",
-                "anchor": "Anchor",
-                "website": "Website",
-                "content": "Nội Dung",
-                "name": "Name",
-                "email": "Email",
-            }
-        ).to_excel(timeouts_output, index=False)
-        logging.info(f"Đã ghi {timeouts_output} ({len(timeout_jobs)} dòng timeouts).")
+    if timeout_rows:
+        df.loc[sorted(timeout_rows), REQUIRED_COLUMNS].to_excel(timeouts_output, index=False)
+        logging.info(f"Đã ghi {timeouts_output} ({len(timeout_rows)} dòng timeouts).")
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,10 @@
+# Domain allowlist (optional)
+#
+# Nếu bạn tạo file `data/allowed_domains.txt` thì tool sẽ chỉ chạy các URL thuộc domain trong file này.
+# Mỗi dòng 1 domain (hoặc URL), hỗ trợ:
+#   - example.com        (match example.com và mọi subdomain)
+#   - *.example.com      (match subdomain בלבד, không match example.com)
+#
+# Ví dụ:
+# example.com
+# *.staging.example.com

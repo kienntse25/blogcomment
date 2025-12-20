@@ -111,3 +111,12 @@ PROXY_SCHEME = (os.getenv("PROXY_SCHEME") or "http").strip() or "http"
 PROXY_HOST = (os.getenv("PROXY_HOST") or "").strip() or None
 PROXY_USER = (os.getenv("PROXY_USER") or "").strip() or None
 PROXY_PASS = (os.getenv("PROXY_PASS") or "").strip() or None
+
+# Safety/guardrails (optional)
+RESPECT_ROBOTS = _env_bool("RESPECT_ROBOTS", False)
+_allowlist_env = (os.getenv("ALLOWED_DOMAINS_FILE") or "").strip()
+if _allowlist_env:
+    ALLOWED_DOMAINS_FILE = _allowlist_env
+else:
+    _default_allowlist = os.path.join("data", "allowed_domains.txt")
+    ALLOWED_DOMAINS_FILE = _default_allowlist if os.path.exists(_default_allowlist) else None
