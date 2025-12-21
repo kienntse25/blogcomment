@@ -229,6 +229,7 @@ Gợi ý: một số theme WordPress lazy-load phần comment ở cuối trang, 
 | `PROXY_XLSX` | `data/proxies.xlsx` nếu file tồn tại | File Excel (cột `Proxy` hoặc cột đầu tiên) chứa danh sách proxy |
 | `PROXY_HOST` | *(trống)* | Dùng khi file proxy chỉ chứa `PORT` (VD: `proxy.provider.com`) |
 | `PROXY_SCHEME` | `http` | Scheme cho proxy khi ghép từ `PROXY_HOST` + `PORT` |
+| `CHROMEDRIVER_VERSION` | *(trống)* | Pin chromedriver version (khuyến nghị set bằng đúng `google-chrome --version` khi driver hay crash) |
 | `PROXY_USER` | *(trống)* | User cho proxy port-only (nếu cần) |
 | `PROXY_PASS` | *(trống)* | Pass cho proxy port-only (nếu cần) |
 
@@ -242,7 +243,7 @@ Nếu nhà cung cấp là loại "PORT" (FPT/VNPT/Viettel…), bạn có thể �
 
 Nếu nhà cung cấp trả proxy dạng `IP:PORT:USER:PASS` (thường gặp ở một số API proxy), bạn có thể dán trực tiếp dòng đó vào `data/proxies.txt`/`data/proxies.xlsx`; tool sẽ tự chuyển thành dạng `http://USER:PASS@IP:PORT` (scheme lấy từ `PROXY_SCHEME`, mặc định `http`).
 
-> Lưu ý: mặc định tool ưu tiên **undetected-chromedriver (UC)** để tăng tỉ lệ tìm comment form trên site có chống bot. Nếu muốn tắt UC (dùng Selenium thường) thì set `USE_UC=false`. Nếu UC lỗi cache khi chạy song song, thử `UC_CLEAR_CACHE=true`.
+> Lưu ý: UC (undetected-chromedriver) có thể không ổn định trên một số bản Chrome mới. Mặc định tool dùng Selenium thường; chỉ bật UC khi cần bằng `USE_UC=true`. Nếu UC lỗi cache khi chạy song song, thử `UC_CLEAR_CACHE=true`.
 
 
 1. `push_jobs_from_excel.py` đọc file Excel, chuẩn hóa header (kể cả alias/không dấu).

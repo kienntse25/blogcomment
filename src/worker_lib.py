@@ -187,8 +187,8 @@ def _load_proxies_from_xlsx() -> list[str]:
 
 
 def _use_uc() -> bool:
-    # Default to UC for higher success rate on bot-protected sites; allow disabling explicitly.
-    return os.getenv("USE_UC", "true").strip().lower() in {"1", "true", "yes", "on"}
+    # UC can be unstable on some Chrome builds; keep it opt-in.
+    return os.getenv("USE_UC", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _clear_uc_cache() -> None:

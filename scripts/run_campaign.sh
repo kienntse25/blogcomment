@@ -6,7 +6,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INPUT="data/comments.xlsx"
 OUTPUT="data/comments_out.xlsx"
 START_WORKER=1
-USE_UC="${USE_UC:-true}"
+USE_UC="${USE_UC:-false}"
 FLUSH_REDIS=0
 CLEAN_OUTPUT=0
 CONCURRENCY="${CELERY_CONCURRENCY:-2}"
@@ -30,7 +30,7 @@ Options:
   --require-gemini     Fail if Gemini prefill fails
   --gemini-flush-every N  Save Excel after every N generated rows (default: env GEMINI_FLUSH_EVERY or 10)
   --no-worker          Don't start Celery worker (assume it's already running)
-  --use-uc             Enable undetected-chromedriver for worker (USE_UC=true) (default)
+  --use-uc             Enable undetected-chromedriver for worker (USE_UC=true)
   --no-uc              Disable undetected-chromedriver (USE_UC=false)
   --flush-redis        FLUSHALL before running (clears old tasks)
   --clean-output       Remove output + *_timeouts.xlsx before running

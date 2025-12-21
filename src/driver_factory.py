@@ -4,6 +4,8 @@ import os
 import time
 import shutil
 import threading
+import subprocess
+import re
 from typing import Optional
 
 # Selenium chuẩn
@@ -41,15 +43,79 @@ def _browser_path() -> Optional[str]:
 _DRIVER_LOCK = threading.Lock()
 _DRIVER_PATH: Optional[str] = os.getenv("CHROMEDRIVER_PATH")
 
+_VER_RE = re.compile(r"(\d+\.\d+\.\d+\.\d+)")
+
+
+def _detect_chrome_version() -> Optional[str]:
+    """
+    Best-effort detect installed Chrome/Chromium version for matching chromedriver.
+    Supports overriding via:
+      - CHROME_VERSION=142.0.7444.134
+    """
+    env_ver = (os.getenv("CHROME_VERSION") or "").strip()
+    if env_ver:
+        m = _VER_RE.search(env_ver)
+        return m.group(1) if m else env_ver
+
+    candidates = (
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+    )
+    for exe in candidates:
+        try:
+            p = subprocess.run(
+                [exe, "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+        except Exception:
+            continue
+        out = (p.stdout or "").strip()
+        m = _VER_RE.search(out)
+        if m:
+            return m.group(1)
+    return None
+
+
 def _resolve_driver_path() -> str:
     global _DRIVER_PATH
     with _DRIVER_LOCK:
         if not _DRIVER_PATH:
-            try:
-                _DRIVER_PATH = ChromeDriverManager(cache_valid_range=30).install()
-            except TypeError:
-                # webdriver-manager >= 4 dropped cache_valid_range
-                _DRIVER_PATH = ChromeDriverManager().install()
+            # Allow pinning version explicitly (recommended for stability on VPS).
+            pinned = (os.getenv("CHROMEDRIVER_VERSION") or "").strip()
+            if not pinned:
+                pinned = _detect_chrome_version() or ""
+
+            mgr = None
+            if pinned:
+                # webdriver-manager v4 uses driver_version, older uses version.
+                try:
+                    mgr = ChromeDriverManager(driver_version=pinned)
+                except TypeError:
+                    try:
+                        mgr = ChromeDriverManager(version=pinned)  # type: ignore[arg-type]
+                    except TypeError:
+                        mgr = None
+
+            if mgr is None:
+                try:
+                    _DRIVER_PATH = ChromeDriverManager(cache_valid_range=30).install()
+                except TypeError:
+                    _DRIVER_PATH = ChromeDriverManager().install()
+            else:
+                try:
+                    _DRIVER_PATH = mgr.install()
+                except Exception:
+                    # Fallback to default behavior (cached "latest") if version pin fails.
+                    try:
+                        _DRIVER_PATH = ChromeDriverManager(cache_valid_range=30).install()
+                    except TypeError:
+                        _DRIVER_PATH = ChromeDriverManager().install()
     return _DRIVER_PATH
 
 
