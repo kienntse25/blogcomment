@@ -1,5 +1,6 @@
 # src/commenter.py
 from __future__ import annotations
+import os
 import time
 import socket
 import html
@@ -414,6 +415,43 @@ def _wait_for_comment_textarea(driver, timeout_sec: float) -> Optional[object]:
     return None
 
 
+def _comment_form_diagnostics(driver) -> str:
+    """
+    Lightweight diagnostics to help understand 'Comment box not found' cases.
+    Returns a short string safe to include in 'reason'.
+    """
+    js = """
+    const q = (s) => document.querySelector(s);
+    const count = (s) => document.querySelectorAll(s).length;
+    const visibleTextareas = Array.from(document.querySelectorAll('textarea')).filter(el => el && el.offsetParent !== null).length;
+    return {
+      title: (document.title || '').slice(0, 80),
+      has_commentform: !!q('#commentform'),
+      has_respond: !!q('#respond'),
+      has_comments: !!q('#comments'),
+      ta_total: count('textarea'),
+      ta_visible: visibleTextareas,
+      iframes: count('iframe'),
+    };
+    """
+    try:
+        d = driver.execute_script(js) or {}
+        title = str(d.get("title", "")).strip()
+        bits = [
+            f"commentform={1 if d.get('has_commentform') else 0}",
+            f"respond={1 if d.get('has_respond') else 0}",
+            f"comments={1 if d.get('has_comments') else 0}",
+            f"ta={int(d.get('ta_total') or 0)}",
+            f"vis={int(d.get('ta_visible') or 0)}",
+            f"ifr={int(d.get('iframes') or 0)}",
+        ]
+        if title:
+            bits.append(f"title={title}")
+        return ", ".join(bits)
+    except Exception:
+        return ""
+
+
 def detect_language(driver, fallback: str = "unknown") -> str:
     """
     Cố gắng phát hiện ngôn ngữ trang hiện tại. Trả về mã ISO-639-1 hoặc fallback.
@@ -545,10 +583,15 @@ def process_job(
         return False, f"WebDriver: {e.__class__.__name__}", ""
 
     _wait_body(driver)
-    _progressive_scroll(driver, steps=6, pause=0.3)
-    # Some themes lazy-load comment form near the bottom; try jumping to comment area.
-    if _scroll_to_comment_area(driver):
-        time.sleep(0.4)
+    # Prefer jumping directly to comment area (fast) rather than full progressive scroll.
+    # This is usually enough for WordPress where #respond/#comments exists in the DOM.
+    jumped = _scroll_to_comment_area(driver)
+    if jumped:
+        time.sleep(0.3)
+    else:
+        _progressive_scroll(driver, steps=6, pause=0.3)
+        if _scroll_to_comment_area(driver):
+            time.sleep(0.3)
 
     # Detect platform
     html_text = ""
@@ -627,7 +670,14 @@ def process_job(
         if platform in platform_reasons:
             return False, platform_reasons.get(platform, "Comment box not found"), ""
         if COMMENT_FORM_WAIT_SEC and COMMENT_FORM_WAIT_SEC > 0:
-            return False, f"Comment box not found (waited {COMMENT_FORM_WAIT_SEC:.0f}s)", ""
+            diag = _comment_form_diagnostics(driver)
+            suffix = f"waited {COMMENT_FORM_WAIT_SEC:.0f}s"
+            if diag:
+                suffix = f"{suffix}; {diag}"
+            return False, f"Comment box not found ({suffix})", ""
+        diag = _comment_form_diagnostics(driver)
+        if diag:
+            return False, f"Comment box not found ({diag})", ""
         return False, "Comment box not found", ""
 
     # Switch frame nếu textarea nằm trong iframe

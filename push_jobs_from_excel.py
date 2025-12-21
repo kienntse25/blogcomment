@@ -65,6 +65,33 @@ def _default_timeouts_output_path(output_path: str) -> str:
     dirname = os.path.dirname(output_path) or "."
     return os.path.join(dirname, f"{base}_timeouts.xlsx")
 
+def _default_log_path(output_path: str) -> str:
+    base = os.path.basename(output_path)
+    if base.lower().endswith(".xlsx"):
+        base = base[:-5]
+    base = re.sub(r"[^a-zA-Z0-9._-]+", "_", base).strip("_") or "run"
+    return os.path.join("logs", f"push_jobs_{base}.log")
+
+def _setup_logging(output_path: str) -> str:
+    log_path = (os.getenv("PUSH_JOBS_LOG") or "").strip()
+    if not log_path:
+        log_path = _default_log_path(output_path)
+    if log_path not in {"-", "stdout", "stderr"}:
+        try:
+            os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
+        except Exception:
+            pass
+        handlers = [logging.FileHandler(log_path, encoding="utf-8"), logging.StreamHandler()]
+    else:
+        log_path = "stdout"
+        handlers = [logging.StreamHandler()]
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        handlers=handlers,
+    )
+    return log_path
+
 
 def _normalize_header(text: str) -> str:
     if text is None:
@@ -270,11 +297,8 @@ def main():
     timeouts_output = args.timeouts_output or _default_timeouts_output_path(args.output)
     timeout_token = str(args.timeout_reason_substr or "").strip().lower()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-        handlers=[logging.FileHandler("push_jobs.log", encoding="utf-8"), logging.StreamHandler()],
-    )
+    log_path = _setup_logging(args.output)
+    logging.info(f"Log: {log_path}")
     logging.info(f"Input: {args.input}")
     logging.info(f"Output: {args.output}")
     logging.info(f"Timeouts output: {timeouts_output}")
@@ -309,18 +333,29 @@ def main():
             out_merged[col] = ""
     if existing_out is not None:
         out_merged = _overlay_existing_into_output(out_merged, df, existing_out)
+    # Ensure output file exists early (helps monitoring progress on VPS).
+    try:
+        os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+        out_merged.to_excel(args.output, index=False)
+        logging.info(f"Initialized output file: {args.output} (rows={len(out_merged)})")
+    except Exception as e:
+        logging.warning(f"Không thể khởi tạo output sớm ({args.output}): {e}")
 
     # Tạo jobs
     jobs=[]
     max_jobs = args.limit if args.limit and args.limit > 0 else None
+    skipped_empty = 0
+    skipped_ok = 0
     for i, row in df.iterrows():
         if max_jobs is not None and len(jobs) >= max_jobs:
             break
         url = str(row["URL"]).strip()
         if not url:
             logging.warning(f"Dòng {i+2} URL trống → bỏ qua")
+            skipped_empty += 1
             continue
         if done_ok and url in done_ok:
+            skipped_ok += 1
             continue
         jobs.append({
             "__row": int(i),
@@ -332,6 +367,15 @@ def main():
             "email": str(row["Email"]).strip(),
             "attach_anchor": bool(args.attach_anchor),
         })
+
+    logging.info(
+        "Prepared jobs=%d (input_rows=%d, skipped_empty=%d, skipped_ok=%d%s)",
+        len(jobs),
+        len(df),
+        skipped_empty,
+        skipped_ok,
+        f", limit={max_jobs}" if max_jobs is not None else "",
+    )
 
     if not jobs:
         logging.warning("Không có job hợp lệ.")
@@ -383,6 +427,7 @@ def main():
     # Chờ theo kiểu "as completed": tránh bị kẹt ở 1 task chậm/treo, và ghi output dần theo tiến độ.
     pending = [(j, ar) for (j, ar) in tasks]
     t_start = time.time()
+    last_heartbeat = t_start
 
     while pending:
         progressed = False
@@ -423,6 +468,16 @@ def main():
             i -= 1
 
         if not progressed:
+            # Heartbeat để biết process còn sống (tránh hiểu nhầm "dừng ở 250").
+            now = time.time()
+            if now - last_heartbeat >= 60:
+                logging.info(
+                    "Still waiting... finished=%d pending=%d elapsed=%ds",
+                    finished,
+                    len(pending),
+                    int(now - t_start),
+                )
+                last_heartbeat = now
             # Nếu quá lâu không có task nào xong, vẫn tiếp tục chờ (giữ tốc độ poll vừa phải)
             time.sleep(poll_interval)
 

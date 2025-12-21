@@ -187,8 +187,8 @@ def _load_proxies_from_xlsx() -> list[str]:
 
 
 def _use_uc() -> bool:
-    # Default to Selenium for stability; enable UC explicitly.
-    return os.getenv("USE_UC", "false").strip().lower() in {"1", "true", "yes", "on"}
+    # Default to UC for higher success rate on bot-protected sites; allow disabling explicitly.
+    return os.getenv("USE_UC", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _clear_uc_cache() -> None:
@@ -470,14 +470,16 @@ def _should_retry(reason: str) -> bool:
     if not reason:
         return True
     reason_lower = reason.lower()
+    # DNS failures can be proxy-specific. If we have multiple proxies, allow a retry to pick a new one.
+    if any(tok in reason_lower for tok in ("dns error", "dns not resolved", "name or service not known")):
+        try:
+            return len(_proxy_candidates()) > 1
+        except Exception:
+            return False
     fatal_tokens = (
-        "dns error",
-        "dns not resolved",
-        "name or service not known",
         "login",
         "captcha",
         "already attempted",
-        "comment box not found",
         "no submit button",
         "invalid url",
         "third-party",

@@ -6,7 +6,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INPUT="data/comments.xlsx"
 OUTPUT="data/comments_out.xlsx"
 START_WORKER=1
-USE_UC="${USE_UC:-false}"
+USE_UC="${USE_UC:-true}"
 FLUSH_REDIS=0
 CLEAN_OUTPUT=0
 CONCURRENCY="${CELERY_CONCURRENCY:-2}"
@@ -29,7 +29,8 @@ Options:
   --require-gemini     Fail if Gemini prefill fails
   --gemini-flush-every N  Save Excel after every N generated rows (default: env GEMINI_FLUSH_EVERY or 10)
   --no-worker          Don't start Celery worker (assume it's already running)
-  --use-uc             Enable undetected-chromedriver for worker (USE_UC=true)
+  --use-uc             Enable undetected-chromedriver for worker (USE_UC=true) (default)
+  --no-uc              Disable undetected-chromedriver (USE_UC=false)
   --flush-redis        FLUSHALL before running (clears old tasks)
   --clean-output       Remove output + *_timeouts.xlsx before running
   --concurrency N      Celery worker concurrency (default: $CELERY_CONCURRENCY or 2)
@@ -53,6 +54,7 @@ while [[ $# -gt 0 ]]; do
     --gemini-flush-every) GEMINI_FLUSH_EVERY="$2"; shift 2 ;;
     --no-worker) START_WORKER=0; shift 1 ;;
     --use-uc) USE_UC=true; shift 1 ;;
+    --no-uc) USE_UC=false; shift 1 ;;
     --flush-redis) FLUSH_REDIS=1; shift 1 ;;
     --clean-output) CLEAN_OUTPUT=1; shift 1 ;;
     --concurrency) CONCURRENCY="$2"; shift 2 ;;
@@ -91,7 +93,7 @@ if [[ "${CLEAN_OUTPUT}" == "1" ]]; then
     out_stem="${out_base}"
   fi
   timeouts_path="${out_dir}/${out_stem}_timeouts.xlsx"
-  rm -f "${OUTPUT}" "${timeouts_path}" push_jobs.log || true
+  rm -f "${OUTPUT}" "${timeouts_path}" push_jobs.log "logs/push_jobs_${out_stem}.log" "logs/push_jobs_${QUEUE}.log" || true
 fi
 
 if [[ "${FLUSH_REDIS}" == "1" ]]; then

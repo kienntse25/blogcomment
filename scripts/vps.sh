@@ -11,6 +11,7 @@ Usage:
   bash scripts/vps.sh run --input PATH --output PATH [--queue NAME] [--timeout SEC] [--flush-every N] [--resume-ok] [--no-anchor]
   bash scripts/vps.sh prefill --input PATH [--flush-every N] [--overwrite]
   bash scripts/vps.sh clean --output PATH
+  bash scripts/vps.sh purge --queues Q1,Q2 [--db N] [--flushdb]
 
 Notes:
   - worker reads proxies automatically from data/proxies.txt (if exists).
@@ -117,6 +118,21 @@ case "${cmd}" in
     if [[ -n "${timeout}" ]]; then
       export PAGELOAD_TIMEOUT="${timeout}"
     fi
+    # Default per-output log file (avoid interleaved push_jobs.log when running many campaigns).
+    if [[ -z "${PUSH_JOBS_LOG:-}" ]]; then
+      mkdir -p "${DIR}/logs" || true
+      out_base="$(basename "${output}")"
+      if [[ "${out_base,,}" == *.xlsx ]]; then
+        out_stem="${out_base%.xlsx}"
+      else
+        out_stem="${out_base}"
+      fi
+      if [[ -n "${queue}" ]]; then
+        export PUSH_JOBS_LOG="logs/push_jobs_${queue}.log"
+      else
+        export PUSH_JOBS_LOG="logs/push_jobs_${out_stem}.log"
+      fi
+    fi
     args=(--input "${input}" --output "${output}" --limit 0)
     if [[ -n "${queue}" ]]; then
       args+=(--queue "${queue}")
@@ -181,8 +197,43 @@ case "${cmd}" in
     else
       out_stem="${out_base}"
     fi
-    rm -f "${output}" "${out_dir}/${out_stem}_timeouts.xlsx" push_jobs.log || true
+    rm -f "${output}" "${out_dir}/${out_stem}_timeouts.xlsx" push_jobs.log "logs/push_jobs_${out_stem}.log" || true
+    if [[ -n "${CELERY_QUEUE:-}" ]]; then
+      rm -f "logs/push_jobs_${CELERY_QUEUE}.log" || true
+    fi
     echo "Cleaned: ${output}"
+    ;;
+
+  purge)
+    db="${REDIS_DB:-0}"
+    queues=""
+    flushdb=0
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --queues) queues="$2"; shift 2 ;;
+        --db) db="$2"; shift 2 ;;
+        --flushdb) flushdb=1; shift 1 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown arg: $1" >&2; usage; exit 2 ;;
+      esac
+    done
+    if [[ "${flushdb}" == "1" ]]; then
+      redis-cli -n "${db}" FLUSHDB
+      echo "Redis DB ${db} flushed."
+      exit 0
+    fi
+    if [[ -z "${queues}" ]]; then
+      echo "Missing --queues" >&2
+      usage
+      exit 2
+    fi
+    IFS=',' read -r -a qs <<< "${queues}"
+    for q in "${qs[@]}"; do
+      q="$(echo "${q}" | xargs)"
+      [[ -z "${q}" ]] && continue
+      redis-cli -n "${db}" DEL "${q}" >/dev/null || true
+      echo "Purged queue key: ${q} (db=${db})"
+    done
     ;;
 
   *)

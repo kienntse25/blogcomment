@@ -55,6 +55,16 @@ Tuỳ chọn dọn output trước khi chạy:
 bash scripts/vps.sh clean --output data/comments_out.xlsx
 ```
 
+Nếu bạn bị tình trạng worker “ăn task cũ” (Redis còn tồn queue cũ / task cũ), hãy purge trước khi chạy:
+
+```bash
+# Xoá toàn bộ task + result trong Redis DB 0 (khuyến nghị khi tool dùng Redis riêng)
+bash scripts/vps.sh purge --flushdb
+
+# Hoặc chỉ xoá key của queue (giữ lại các key khác trong Redis DB)
+bash scripts/vps.sh purge --queues camp_a,camp_b,camp_c
+```
+
 Các script tiện ích:
 
 - `scripts/run.sh`: kích hoạt venv và chạy worker (tương đương `make worker`).
@@ -210,6 +220,7 @@ Gợi ý: một số theme WordPress lazy-load phần comment ở cuối trang, 
 | `PAGELOAD_TIMEOUT` | `25` | Timeout load trang (giây) |
 | `FIND_TIMEOUT` | `8.0` | Timeout tìm field (giây) |
 | `COMMENT_FORM_WAIT_SEC` | `12.0` | Chờ comment form render thêm (giây) nếu site lazy-load |
+| `PUSH_JOBS_LOG` | `logs/push_jobs_<output>.log` | Log riêng cho mỗi campaign (tránh trộn log khi chạy nhiều file) |
 | `RETRY_DRIVER_VERSIONS` | `0,141,140` | Danh sách uc major version fallback |
 | `REGISTRY_DB` | `data/registry.sqlite3` | Đường dẫn registry |
 | `PROXY_URL` | *(trống)* | Proxy cố định dạng `http://user:pass@host:port` |
@@ -231,7 +242,7 @@ Nếu nhà cung cấp là loại "PORT" (FPT/VNPT/Viettel…), bạn có thể �
 
 Nếu nhà cung cấp trả proxy dạng `IP:PORT:USER:PASS` (thường gặp ở một số API proxy), bạn có thể dán trực tiếp dòng đó vào `data/proxies.txt`/`data/proxies.xlsx`; tool sẽ tự chuyển thành dạng `http://USER:PASS@IP:PORT` (scheme lấy từ `PROXY_SCHEME`, mặc định `http`).
 
-> Lưu ý: để ổn định khi chạy song song nhiều worker, mặc định tool ưu tiên Selenium. Chỉ bật UC khi cần bằng `USE_UC=true` và có thể set `UC_CLEAR_CACHE=true` nếu UC bị lỗi cache.
+> Lưu ý: mặc định tool ưu tiên **undetected-chromedriver (UC)** để tăng tỉ lệ tìm comment form trên site có chống bot. Nếu muốn tắt UC (dùng Selenium thường) thì set `USE_UC=false`. Nếu UC lỗi cache khi chạy song song, thử `UC_CLEAR_CACHE=true`.
 
 
 1. `push_jobs_from_excel.py` đọc file Excel, chuẩn hóa header (kể cả alias/không dấu).
