@@ -6,6 +6,7 @@ import shutil
 import threading
 import subprocess
 import re
+from contextlib import contextmanager
 from typing import Optional
 
 # Selenium chuẩn
@@ -82,40 +83,79 @@ def _detect_chrome_version() -> Optional[str]:
     return None
 
 
+@contextmanager
+def _wdm_install_lock():
+    """
+    Cross-process lock to prevent multiple Celery workers from downloading/unzipping
+    chromedriver at the same time (can corrupt cache or waste bandwidth).
+    """
+    try:
+        import fcntl  # Unix only
+    except Exception:
+        yield
+        return
+
+    lock_path = os.getenv("WDM_LOCK_FILE", "/tmp/webdriver_manager.lock")
+    timeout_sec = float(os.getenv("WDM_LOCK_TIMEOUT_SEC", "120"))
+    start = time.time()
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.time() - start >= timeout_sec:
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+                    break
+                time.sleep(0.2)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            os.close(fd)
+        except Exception:
+            pass
+
+
 def _resolve_driver_path() -> str:
     global _DRIVER_PATH
     with _DRIVER_LOCK:
         if not _DRIVER_PATH:
-            # Allow pinning version explicitly (recommended for stability on VPS).
-            pinned = (os.getenv("CHROMEDRIVER_VERSION") or "").strip()
-            if not pinned:
-                pinned = _detect_chrome_version() or ""
+            with _wdm_install_lock():
+                # Allow pinning version explicitly (recommended for stability on VPS).
+                pinned = (os.getenv("CHROMEDRIVER_VERSION") or "").strip()
+                if not pinned:
+                    pinned = _detect_chrome_version() or ""
 
-            mgr = None
-            if pinned:
-                # webdriver-manager v4 uses driver_version, older uses version.
-                try:
-                    mgr = ChromeDriverManager(driver_version=pinned)
-                except TypeError:
+                mgr = None
+                if pinned:
+                    # webdriver-manager v4 uses driver_version, older uses version.
                     try:
-                        mgr = ChromeDriverManager(version=pinned)  # type: ignore[arg-type]
+                        mgr = ChromeDriverManager(driver_version=pinned)
                     except TypeError:
-                        mgr = None
+                        try:
+                            mgr = ChromeDriverManager(version=pinned)  # type: ignore[arg-type]
+                        except TypeError:
+                            mgr = None
 
-            if mgr is None:
-                try:
-                    _DRIVER_PATH = ChromeDriverManager(cache_valid_range=30).install()
-                except TypeError:
-                    _DRIVER_PATH = ChromeDriverManager().install()
-            else:
-                try:
-                    _DRIVER_PATH = mgr.install()
-                except Exception:
-                    # Fallback to default behavior (cached "latest") if version pin fails.
+                if mgr is None:
                     try:
                         _DRIVER_PATH = ChromeDriverManager(cache_valid_range=30).install()
                     except TypeError:
                         _DRIVER_PATH = ChromeDriverManager().install()
+                else:
+                    try:
+                        _DRIVER_PATH = mgr.install()
+                    except Exception:
+                        # Fallback to default behavior (cached "latest") if version pin fails.
+                        try:
+                            _DRIVER_PATH = ChromeDriverManager(cache_valid_range=30).install()
+                        except TypeError:
+                            _DRIVER_PATH = ChromeDriverManager().install()
     return _DRIVER_PATH
 
 

@@ -21,6 +21,30 @@ make pipeline                  # tab khác: chạy pipeline từ Excel
 
 ### Chạy nhanh trên VPS (dễ thao tác)
 
+### Chế độ “non-tech” (khuyến nghị)
+
+Nếu bạn muốn đưa tool cho người không rành kỹ thuật, dùng script `scripts/easy.sh`.
+Script này **bắt buộc** có allowlist (`data/allowed_domains.txt`) để tránh chạy nhầm trên domain không được phép.
+
+1) Setup 1 lần:
+
+```bash
+bash scripts/easy.sh setup
+cp data/allowed_domains.example.txt data/allowed_domains.txt
+nano data/allowed_domains.txt
+```
+
+2) Chạy 1 campaign (tự mở tmux 2 pane nếu có tmux):
+
+```bash
+bash scripts/easy.sh run --queue camp_a --input data/comments_a.xlsx --two-pass
+```
+
+Output:
+- `data/out_camp_a.xlsx`
+- `data/out_camp_a_timeouts.xlsx`
+- `data/out_camp_a_no_comment.xlsx`
+
 Mở 2 terminal:
 
 - Terminal 1 (worker):
@@ -106,6 +130,17 @@ Tách riêng các URL bị `Page load timeout` để chạy lại:
 export PAGELOAD_TIMEOUT=60
 export FIND_TIMEOUT=12
 python push_jobs_from_excel.py --input data/comments_out_timeouts.xlsx --output data/comments_out_retry.xlsx --limit 0
+```
+
+Tách riêng các URL bị `Comment box not found` để chạy batch chậm hơn:
+
+- Khi chạy pipeline, tool sẽ tự tạo thêm file `*_no_comment.xlsx` cạnh output.
+- Bạn có thể chạy lại file này với cấu hình “chậm nhưng chắc” (comment-wait lớn hơn, bật iframe search nếu cần):
+
+```bash
+export COMMENT_FORM_WAIT_SEC=25
+export SEARCH_IFRAMES=true
+python push_jobs_from_excel.py --input data/comments_out_no_comment.xlsx --output data/comments_out_retry_no_comment.xlsx --limit 0
 ```
 
 Resume khi crash/restart (bỏ qua URL đã OK trong output):
@@ -220,6 +255,7 @@ Gợi ý: một số theme WordPress lazy-load phần comment ở cuối trang, 
 | `PAGELOAD_TIMEOUT` | `25` | Timeout load trang (giây) |
 | `FIND_TIMEOUT` | `8.0` | Timeout tìm field (giây) |
 | `COMMENT_FORM_WAIT_SEC` | `12.0` | Chờ comment form render thêm (giây) nếu site lazy-load |
+| `FAST_SCROLL_TO_BOTTOM` | `true` | Nếu chưa thấy form trong DOM, nhảy nhanh xuống cuối trang để tìm comment box (tăng tốc cho site WP có comment ở cuối) |
 | `PUSH_JOBS_LOG` | `logs/push_jobs_<output>.log` | Log riêng cho mỗi campaign (tránh trộn log khi chạy nhiều file) |
 | `RETRY_DRIVER_VERSIONS` | `0,141,140` | Danh sách uc major version fallback (khuyến nghị để `0` đứng đầu) |
 | `REGISTRY_DB` | `data/registry.sqlite3` | Đường dẫn registry |

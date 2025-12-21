@@ -65,6 +65,13 @@ def _default_timeouts_output_path(output_path: str) -> str:
     dirname = os.path.dirname(output_path) or "."
     return os.path.join(dirname, f"{base}_timeouts.xlsx")
 
+def _default_no_comment_output_path(output_path: str) -> str:
+    base = os.path.basename(output_path)
+    if base.lower().endswith(".xlsx"):
+        base = base[:-5]
+    dirname = os.path.dirname(output_path) or "."
+    return os.path.join(dirname, f"{base}_no_comment.xlsx")
+
 def _default_log_path(output_path: str) -> str:
     base = os.path.basename(output_path)
     if base.lower().endswith(".xlsx"):
@@ -289,6 +296,16 @@ def main():
         default="Page load timeout",
         help="Chuỗi reason để phân loại sang file timeouts (mặc định: 'Page load timeout')",
     )
+    ap.add_argument(
+        "--no-comment-output",
+        default=None,
+        help="Ghi riêng các dòng bị 'Comment box not found' ra file Excel (để chạy batch chậm hơn)",
+    )
+    ap.add_argument(
+        "--no-comment-reason-substr",
+        default="Comment box not found",
+        help="Chuỗi reason để phân loại sang file no_comment (mặc định: 'Comment box not found')",
+    )
     ap.add_argument("--sync-one", action="store_true", help="Chạy 1 dòng đầu không cần Celery")
     args = ap.parse_args()
 
@@ -296,12 +313,15 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     timeouts_output = args.timeouts_output or _default_timeouts_output_path(args.output)
     timeout_token = str(args.timeout_reason_substr or "").strip().lower()
+    no_comment_output = args.no_comment_output or _default_no_comment_output_path(args.output)
+    no_comment_token = str(args.no_comment_reason_substr or "").strip().lower()
 
     log_path = _setup_logging(args.output)
     logging.info(f"Log: {log_path}")
     logging.info(f"Input: {args.input}")
     logging.info(f"Output: {args.output}")
     logging.info(f"Timeouts output: {timeouts_output}")
+    logging.info(f"No-comment output: {no_comment_output}")
     logging.info("Output mode: merged (input columns + result columns)")
 
     # Đọc input
@@ -420,6 +440,7 @@ def main():
 
     logging.info("Đang chờ kết quả từ các task...")
     timeout_rows: set[int] = set()
+    no_comment_rows: set[int] = set()
     flush_every = max(1, int(args.flush_every))
     finished = 0
     poll_interval = 0.5
@@ -455,6 +476,9 @@ def main():
                 if timeout_token and timeout_token in reason:
                     if row_i >= 0:
                         timeout_rows.add(row_i)
+                if no_comment_token and no_comment_token in reason:
+                    if row_i >= 0:
+                        no_comment_rows.add(row_i)
                 pending[i] = pending[-1]
                 pending.pop()
                 progressed = True
@@ -465,6 +489,9 @@ def main():
                     if timeout_rows:
                         df.loc[sorted(timeout_rows), REQUIRED_COLUMNS].to_excel(timeouts_output, index=False)
                         logging.info(f"Đã ghi tạm {timeouts_output} ({len(timeout_rows)} dòng timeouts).")
+                    if no_comment_rows:
+                        df.loc[sorted(no_comment_rows), REQUIRED_COLUMNS].to_excel(no_comment_output, index=False)
+                        logging.info(f"Đã ghi tạm {no_comment_output} ({len(no_comment_rows)} dòng no_comment).")
             i -= 1
 
         if not progressed:
@@ -487,6 +514,9 @@ def main():
     if timeout_rows:
         df.loc[sorted(timeout_rows), REQUIRED_COLUMNS].to_excel(timeouts_output, index=False)
         logging.info(f"Đã ghi {timeouts_output} ({len(timeout_rows)} dòng timeouts).")
+    if no_comment_rows:
+        df.loc[sorted(no_comment_rows), REQUIRED_COLUMNS].to_excel(no_comment_output, index=False)
+        logging.info(f"Đã ghi {no_comment_output} ({len(no_comment_rows)} dòng no_comment).")
 
 if __name__ == "__main__":
     main()

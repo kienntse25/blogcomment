@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from langdetect import detect, DetectorFactory
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.keys import Keys
 from selenium.common.exceptions import (
     NoSuchElementException,
     TimeoutException,
@@ -28,6 +29,7 @@ from .config import (
     LANG_DETECT_MIN_CHARS,
     ATTACH_ANCHOR,
     COMMENT_FORM_WAIT_SEC,
+    FAST_SCROLL_TO_BOTTOM,
 )
 
 DetectorFactory.seed = 0
@@ -99,6 +101,84 @@ def _progressive_scroll(driver, steps: int = 6, pause: float = 0.35):
             _raise_if_session_lost(e)
             break
         time.sleep(pause)
+
+def _fast_scroll_to_bottom(driver, rounds: int = 3, pause: float = 0.25):
+    """
+    Jump quickly to bottom to trigger lazy-loaded comment sections.
+    Uses both JS scroll and END/PAGEDOWN key events.
+    """
+    try:
+        driver.switch_to.default_content()
+    except Exception:
+        pass
+    last_h = 0
+    for _ in range(max(1, rounds)):
+        try:
+            h = driver.execute_script(
+                "return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);"
+            )
+            if h:
+                driver.execute_script("window.scrollTo(0, arguments[0]);", h)
+                last_h = h
+        except InvalidSessionIdException:
+            raise
+        except Exception:
+            pass
+        # Send a few key presses in case page listens to scroll keys
+        try:
+            body = driver.find_element(By.TAG_NAME, "body")
+            body.send_keys(Keys.END)
+            body.send_keys(Keys.PAGE_DOWN)
+            body.send_keys(Keys.PAGE_DOWN)
+        except InvalidSessionIdException:
+            raise
+        except Exception:
+            try:
+                ActionChains(driver).send_keys(Keys.END).perform()
+            except Exception:
+                pass
+        time.sleep(pause)
+    # one more nudge
+    if last_h:
+        try:
+            driver.execute_script("window.scrollTo(0, arguments[0]);", last_h)
+        except Exception:
+            pass
+
+def _quick_seek_comment_form(driver) -> bool:
+    """
+    Try to find a comment textarea/form in the current DOM without heavy scrolling.
+    If found, scroll directly to it (works for sites where the form is near the top).
+    Returns True if we found a likely comment textarea and scrolled to it.
+    """
+    js = """
+    const sels = [
+      'textarea#comment',
+      "textarea[name='comment']",
+      '#commentform textarea',
+      '#respond textarea',
+      '#comments textarea',
+      '.comment-respond textarea',
+      '.comments-area textarea'
+    ];
+    for (const s of sels) {
+      try {
+        const el = document.querySelector(s);
+        if (!el) continue;
+        const r = el.getBoundingClientRect();
+        // If it's extremely offscreen, still scroll; the point is to jump directly.
+        try { el.scrollIntoView({block:'center', inline:'nearest'}); } catch(e) {}
+        return true;
+      } catch(e) {}
+    }
+    return false;
+    """
+    try:
+        return bool(driver.execute_script(js))
+    except InvalidSessionIdException:
+        raise
+    except Exception:
+        return False
 
 
 def _reveal_hidden_textarea(driver):
@@ -485,6 +565,39 @@ def _comment_form_diagnostics(driver) -> str:
     except Exception:
         return ""
 
+def _is_tls_privacy_interstitial(driver, html_text: str) -> bool:
+    try:
+        title = (driver.title or "").strip().lower()
+    except Exception:
+        title = ""
+    t = (html_text or "").lower()
+    if "privacy error" in title:
+        return True
+    if "your connection is not private" in t:
+        return True
+    if "net::err_cert" in t or "err_cert" in t:
+        return True
+    return False
+
+
+def _is_probable_404(driver, html_text: str) -> bool:
+    try:
+        cur = (driver.current_url or "").lower()
+    except Exception:
+        cur = ""
+    try:
+        title = (driver.title or "").strip().lower()
+    except Exception:
+        title = ""
+    t = (html_text or "").lower()
+    if "?p=404" in cur or "error=404" in cur:
+        return True
+    if "404" in title and ("not found" in title or "page not found" in title):
+        return True
+    if "404 not found" in t or "page not found" in t:
+        return True
+    return False
+
 
 def detect_language(driver, fallback: str = "unknown") -> str:
     """
@@ -619,15 +732,25 @@ def process_job(
         return False, f"WebDriver: {e.__class__.__name__}", ""
 
     _wait_body(driver)
-    # Prefer jumping directly to comment area (fast) rather than full progressive scroll.
-    # This is usually enough for WordPress where #respond/#comments exists in the DOM.
-    jumped = _scroll_to_comment_area(driver)
-    if jumped:
-        time.sleep(0.3)
+    # Smart pre-scroll:
+    # 1) Some sites render the comment form near the top (or in the DOM immediately).
+    #    Try to locate it and jump directly to it first.
+    _try_open_comment_form(driver)
+    if _quick_seek_comment_form(driver):
+        time.sleep(0.15)
     else:
-        _progressive_scroll(driver, steps=6, pause=0.3)
+        # 2) Most sites place comments at the bottom. Jump fast to bottom to trigger lazy-load.
+        if FAST_SCROLL_TO_BOTTOM:
+            _fast_scroll_to_bottom(driver, rounds=3, pause=0.25)
+            time.sleep(0.1)
+        # 3) Try to jump directly to known comment containers.
         if _scroll_to_comment_area(driver):
-            time.sleep(0.3)
+            time.sleep(0.2)
+        elif not FAST_SCROLL_TO_BOTTOM:
+            # Fallback to progressive scroll only when fast scroll is disabled.
+            _progressive_scroll(driver, steps=6, pause=0.3)
+            if _scroll_to_comment_area(driver):
+                time.sleep(0.2)
 
     # Detect platform
     html_text = ""
@@ -635,6 +758,11 @@ def process_job(
         html_text = driver.page_source or ""
     except Exception:
         pass
+    # Fast-fail common interstitials to avoid wasting 25s waiting for comment form.
+    if _is_tls_privacy_interstitial(driver, html_text):
+        return False, "TLS/Privacy error", ""
+    if _is_probable_404(driver, html_text):
+        return False, "Not found (404)", ""
     platform = _detect_platform(html_text)
 
     login_hint = platform == "login"

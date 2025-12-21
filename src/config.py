@@ -56,6 +56,7 @@ AFTER_SUBMIT_PAUSE = _env_float("AFTER_SUBMIT_PAUSE", 2.0)  # Dừng lại sau k
 PAGE_LOAD_TIMEOUT = _env_int("PAGELOAD_TIMEOUT", 25)     # Timeout load trang (s)
 ATTACH_ANCHOR = _env_bool("ATTACH_ANCHOR", True)         # Có gắn anchor/website vào comment hay không
 COMMENT_FORM_WAIT_SEC = _env_float("COMMENT_FORM_WAIT_SEC", 12.0)  # Chờ comment form render (s) khi site lazy-load
+FAST_SCROLL_TO_BOTTOM = _env_bool("FAST_SCROLL_TO_BOTTOM", True)  # Nhảy nhanh xuống cuối trang để tìm comment box
 
 # Log/DB
 SCRIPT_LOG = os.getenv("SCRIPT_LOG", "blog_comment_tool.log")
