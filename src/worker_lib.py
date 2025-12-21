@@ -447,6 +447,17 @@ def _acquire_driver(prefer_uc: bool = True, proxy: str | None = None):
         for idx, ver in enumerate(RETRY_DRIVER_VERSIONS, start=1):
             try:
                 driver = _make_driver_uc(ver, proxy=proxy)
+                # Smoke test: sometimes chromedriver/Chrome dies immediately after creation,
+                # resulting in "Connection refused" on the first command. Catch it here so
+                # we can try another major (or fall back to Selenium) instead of wasting attempts.
+                try:
+                    driver.execute_script("return 1;")
+                except Exception as exc:
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
+                    raise RuntimeError(f"uc session died after init: {exc}") from exc
                 log.info(
                     "[worker_lib] Created Chrome driver (provider=uc, attempt=%d, major=%s)",
                     idx,

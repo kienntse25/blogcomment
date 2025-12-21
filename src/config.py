@@ -75,7 +75,8 @@ USER_AGENT = os.getenv(
 # Cho undetected-chromedriver: thử auto trước (0), sau đó fallback các version được cấu hình
 RETRY_DRIVER_VERSIONS = _parse_versions(
     os.getenv("RETRY_DRIVER_VERSIONS"),
-    [141, 0, 140],
+    # Use auto (0) first to match installed Chrome, then fall back.
+    [0, 141, 140],
 )
 
 # Pipeline defaults

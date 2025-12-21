@@ -221,7 +221,7 @@ Gợi ý: một số theme WordPress lazy-load phần comment ở cuối trang, 
 | `FIND_TIMEOUT` | `8.0` | Timeout tìm field (giây) |
 | `COMMENT_FORM_WAIT_SEC` | `12.0` | Chờ comment form render thêm (giây) nếu site lazy-load |
 | `PUSH_JOBS_LOG` | `logs/push_jobs_<output>.log` | Log riêng cho mỗi campaign (tránh trộn log khi chạy nhiều file) |
-| `RETRY_DRIVER_VERSIONS` | `0,141,140` | Danh sách uc major version fallback |
+| `RETRY_DRIVER_VERSIONS` | `0,141,140` | Danh sách uc major version fallback (khuyến nghị để `0` đứng đầu) |
 | `REGISTRY_DB` | `data/registry.sqlite3` | Đường dẫn registry |
 | `PROXY_URL` | *(trống)* | Proxy cố định dạng `http://user:pass@host:port` |
 | `PROXY_LIST` | *(trống)* | Danh sách proxy cách nhau dấu phẩy, worker chọn ngẫu nhiên |
