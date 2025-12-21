@@ -35,6 +35,27 @@ _TAG_RE = re.compile(r"<[^>]+>")
 
 # ---------------- Helpers ----------------
 
+def _is_driver_connection_lost(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    tokens = (
+        "connection refused",
+        "failed to establish a new connection",
+        "max retries exceeded",
+        "newconnectionerror",
+        "connectionerror",
+        "disconnected",
+        "invalid session id",
+        "chrome not reachable",
+        "unknown error: cannot determine loading status",
+    )
+    return any(t in msg for t in tokens)
+
+
+def _raise_if_session_lost(exc: Exception) -> None:
+    if _is_driver_connection_lost(exc):
+        raise InvalidSessionIdException(str(exc))
+
+
 def _dns_ok(u: str, timeout=5) -> Tuple[bool, str]:
     try:
         host = urlparse(u).hostname
@@ -54,7 +75,7 @@ def _wait_body(driver):
     except InvalidSessionIdException:
         raise
     except Exception:
-        pass
+        return
 
 
 def _progressive_scroll(driver, steps: int = 6, pause: float = 0.35):
@@ -73,7 +94,9 @@ def _progressive_scroll(driver, steps: int = 6, pause: float = 0.35):
             driver.execute_script("window.scrollTo(0, arguments[0]);", height * i / steps)
         except InvalidSessionIdException:
             raise
-        except Exception:
+        except Exception as e:
+            # If driver died mid-run, stop quickly so worker can recreate it.
+            _raise_if_session_lost(e)
             break
         time.sleep(pause)
 
@@ -220,6 +243,12 @@ def _find_any_frame(driver, selectors, timeout=FIND_TIMEOUT) -> Tuple[Optional[o
             if el:
                 return el, None
 
+            # Optional: searching inside iframes costs a lot of WebDriver calls and can be flaky.
+            # Disable by setting SEARCH_IFRAMES=false (recommended for WordPress campaigns).
+            if os.getenv("SEARCH_IFRAMES", "true").strip().lower() in {"0", "false", "no", "off"}:
+                time.sleep(0.2)
+                continue
+
             iframes = driver.find_elements(By.TAG_NAME, "iframe")
             for idx, fr in enumerate(iframes):
                 try:
@@ -228,11 +257,15 @@ def _find_any_frame(driver, selectors, timeout=FIND_TIMEOUT) -> Tuple[Optional[o
                     el2 = _qsa_first(driver, selectors)
                     if el2:
                         return el2, idx
-                except Exception:
+                except InvalidSessionIdException:
+                    raise
+                except Exception as e:
+                    _raise_if_session_lost(e)
                     continue
         except InvalidSessionIdException:
             raise
-        except Exception:
+        except Exception as e:
+            _raise_if_session_lost(e)
             pass
         time.sleep(0.2)
 
@@ -262,7 +295,7 @@ def _switch_to_frame(driver, index: Optional[int]) -> bool:
     except InvalidSessionIdException:
         raise
     except Exception:
-        pass
+        return False
     if index is None:
         return True
     try:
@@ -279,6 +312,7 @@ def _switch_to_frame(driver, index: Optional[int]) -> bool:
     except InvalidSessionIdException:
         raise
     except Exception:
+        _raise_if_session_lost(Exception("switch_to_frame failed"))
         return False
 
 
@@ -580,6 +614,8 @@ def process_job(
         msg = str(e)
         if "ERR_NAME_NOT_RESOLVED" in msg:
             return False, "DNS not resolved", ""
+        if _is_driver_connection_lost(e):
+            return False, "WebDriver session lost", ""
         return False, f"WebDriver: {e.__class__.__name__}", ""
 
     _wait_body(driver)
