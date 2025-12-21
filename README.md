@@ -26,7 +26,7 @@ Mở 2 terminal:
 - Terminal 1 (worker):
 
 ```bash
-bash scripts/vps.sh worker --concurrency 3 --queues camp_test --pageload 60 --find-timeout 15 --comment-wait 25
+bash scripts/vps.sh worker --concurrency 3 --queues camp_test --pool threads --pageload 60 --find-timeout 15 --comment-wait 25
 ```
 
 Gợi ý tối ưu tốc độ (tuỳ chọn):

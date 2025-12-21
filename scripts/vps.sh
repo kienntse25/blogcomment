@@ -7,7 +7,7 @@ cd "${DIR}"
 usage() {
   cat <<'EOF'
 Usage:
-  bash scripts/vps.sh worker [--concurrency N] [--queues Q1,Q2] [--loglevel info] [--pageload SEC] [--find-timeout SEC] [--comment-wait SEC]
+  bash scripts/vps.sh worker [--concurrency N] [--queues Q1,Q2] [--loglevel info] [--pool prefork|threads|solo] [--pageload SEC] [--find-timeout SEC] [--comment-wait SEC]
   bash scripts/vps.sh run --input PATH --output PATH [--queue NAME] [--timeout SEC] [--flush-every N] [--resume-ok] [--no-anchor]
   bash scripts/vps.sh prefill --input PATH [--flush-every N] [--overwrite]
   bash scripts/vps.sh clean --output PATH
@@ -54,6 +54,7 @@ case "${cmd}" in
     concurrency="${CELERY_CONCURRENCY:-2}"
     queues="${CELERY_QUEUES:-${CELERY_QUEUE:-camp_test}}"
     loglevel="${CELERY_LOGLEVEL:-info}"
+    pool="${CELERY_POOL:-}"
     pageload="${PAGELOAD_TIMEOUT:-}"
     find_timeout="${FIND_TIMEOUT:-}"
     comment_wait="${COMMENT_FORM_WAIT_SEC:-}"
@@ -63,6 +64,7 @@ case "${cmd}" in
         --concurrency) concurrency="$2"; shift 2 ;;
         --queues) queues="$2"; shift 2 ;;
         --loglevel) loglevel="$2"; shift 2 ;;
+        --pool) pool="$2"; shift 2 ;;
         --pageload) pageload="$2"; shift 2 ;;
         --find-timeout) find_timeout="$2"; shift 2 ;;
         --comment-wait) comment_wait="$2"; shift 2 ;;
@@ -74,6 +76,9 @@ case "${cmd}" in
     export CELERY_CONCURRENCY="${concurrency}"
     export CELERY_QUEUES="${queues}"
     export CELERY_LOGLEVEL="${loglevel}"
+    if [[ -n "${pool}" ]]; then
+      export CELERY_POOL="${pool}"
+    fi
     if [[ -n "${pageload}" ]]; then
       export PAGELOAD_TIMEOUT="${pageload}"
     fi

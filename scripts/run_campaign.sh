@@ -11,6 +11,7 @@ FLUSH_REDIS=0
 CLEAN_OUTPUT=0
 CONCURRENCY="${CELERY_CONCURRENCY:-2}"
 QUEUE="${CELERY_QUEUE:-}"
+POOL="${CELERY_POOL:-}"
 SKIP_GEMINI=0
 REQUIRE_GEMINI=0
 GEMINI_FLUSH_EVERY="${GEMINI_FLUSH_EVERY:-10}"
@@ -34,6 +35,7 @@ Options:
   --flush-redis        FLUSHALL before running (clears old tasks)
   --clean-output       Remove output + *_timeouts.xlsx before running
   --concurrency N      Celery worker concurrency (default: $CELERY_CONCURRENCY or 2)
+  --pool NAME          Celery pool (prefork|threads|solo). Recommended: threads when USE_UC=true
   -h, --help           Show help
 
 Flow:
@@ -58,6 +60,7 @@ while [[ $# -gt 0 ]]; do
     --flush-redis) FLUSH_REDIS=1; shift 1 ;;
     --clean-output) CLEAN_OUTPUT=1; shift 1 ;;
     --concurrency) CONCURRENCY="$2"; shift 2 ;;
+    --pool) POOL="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; usage; exit 2 ;;
   esac
@@ -136,7 +139,11 @@ trap cleanup EXIT
 
 if [[ "${START_WORKER}" == "1" ]]; then
   echo "[campaign] Starting worker (queue=${QUEUE}, concurrency=${CONCURRENCY}, USE_UC=${USE_UC})"
-  celery -A src.tasks worker --loglevel=info --concurrency="${CONCURRENCY}" -Q "${QUEUE}" &
+  EXTRA_ARGS=()
+  if [[ -n "${POOL}" ]]; then
+    EXTRA_ARGS+=("--pool=${POOL}")
+  fi
+  celery -A src.tasks worker --loglevel=info --concurrency="${CONCURRENCY}" -Q "${QUEUE}" "${EXTRA_ARGS[@]}" &
   WORKER_PID="$!"
   sleep 2
 fi
