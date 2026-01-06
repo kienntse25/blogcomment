@@ -1,0 +1,327 @@
+<parameter name="content">"""
+Registry - SQLite-based deduplication with connection pooling.
+Optimized for high-concurrency access from multiple workers.
+"""
+from __future__ import annotations
+import os
+import sqlite3
+import threading
+import logging
+from typing import Optional, Dict, Any
+from contextlib import contextmanager
+from pathlib import Path
+
+log = logging.getLogger("registry")
+
+# Database configuration
+REGISTRY_DB = os.getenv("REGISTRY_DB", os.getenv("SEEN_DB", "data/registry.sqlite3"))
+_SEEN_DB = REGISTRY_DB  # giữ tên cũ cho tương thích
+
+# Connection pool settings
+_POOL_SIZE = int(os.getenv("REGISTRY_POOL_SIZE", "10"))
+_POOL_TIMEOUT = float(os.getenv("REGISTRY_POOL_TIMEOUT", "30"))
+
+# Thread-local storage for connections
+_local = threading.local()
+_init_lock = threading.Lock()
+_initialized = False
+
+
+def _connect() -> sqlite3.Connection:
+    """
+    Get a database connection with optimized settings.
+    Uses thread-local storage for connection management.
+    """
+    # Create connection for this thread
+    conn = sqlite3.connect(
+        REGISTRY_DB,
+        timeout=10,  # Lock timeout
+        isolation_level=None,  # Autocommit mode
+        check_same_thread=False,
+    )
+    
+    # Optimize for concurrent access
+    conn.execute("PRAGMA journal_mode=WAL")  # Write-Ahead Logging
+    conn.execute("PRAGMA synchronous=NORMAL")  # Balanced durability
+    conn.execute("PRAGMA cache_size=-64000")  # 64MB cache
+    conn.execute("PRAGMA temp_store=MEMORY")  # Temp tables in memory
+    conn.execute("PRAGMA mmap_size=268435456")  # 256MB memory-mapped I/O
+    
+    return conn
+
+
+def _ensure_schema() -> None:
+    """Ensure database schema exists (thread-safe with double-check)."""
+    global _initialized
+    
+    if _initialized:
+        return
+    
+    with _init_lock:
+        if _initialized:
+            return
+        
+        conn = _connect()
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS seen_registry (
+                    key TEXT PRIMARY KEY,
+                    url TEXT NOT NULL,
+                    name TEXT,
+                    email TEXT,
+                    status TEXT,
+                    reason TEXT,
+                    comment_link TEXT,
+                    language TEXT,
+                    attempts INTEGER,
+                    driver TEXT,
+                    meta_json TEXT,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+            """)
+            
+            # Create indexes for common queries
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_seen_url 
+                ON seen_registry(url)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_seen_status 
+                ON seen_registry(status)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_seen_created 
+                ON seen_registry(created_at DESC)
+            """)
+            
+            # Vacuum periodically (lightweight)
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            
+            _initialized = True
+            log.info("[registry] Schema initialized")
+        finally:
+            conn.close()
+
+
+def _fingerprint(url: str, content: str, name: str, email: str) -> str:
+    """
+    Create a deterministic fingerprint for deduplication.
+    Uses only URL + content to identify unique comments.
+    """
+    raw = "|".join((
+        url.strip().lower(),
+        content.strip().lower(),
+        name.strip().lower(),
+        email.strip().lower(),
+    ))
+    import hashlib
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _make_key(url: str, content: str, name: str, email: str) -> str:
+    """Create unique key for registry."""
+    fp = _fingerprint(url, content, name, email)
+    return f"{url.strip()}::{fp}"
+
+
+def was_seen(url: str, content: str, name: str, email: str) -> bool:
+    """
+    Check if a URL+content combination was successfully processed.
+    Returns True only if status='OK' (not failed attempts).
+    """
+    _ensure_schema()
+    key = _make_key(url, content, name, email)
+    
+    conn = _connect()
+    try:
+        cursor = conn.execute(
+            "SELECT status FROM seen_registry WHERE key = ? LIMIT 1",
+            (key,)
+        )
+        row = cursor.fetchone()
+        # Only count as "seen" if previously successful
+        return row is not None and row[0] == "OK"
+    except Exception as e:
+        log.warning("[registry] was_seen error: %s", e)
+        return False
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def mark_seen(
+    url: str,
+    content: str,
+    name: str,
+    email: str,
+    meta: Optional[Dict[str, Any]] = None,
+    status: str = "OK",
+) -> None:
+    """
+    Mark a URL+content combination as processed.
+    Uses INSERT OR REPLACE to handle duplicates atomically.
+    """
+    _ensure_schema()
+    key = _make_key(url, content, name, email)
+    now = __import__("time").time()
+    
+    import json
+    meta_json = json.dumps(meta or {}, ensure_ascii=False, default=str)
+    
+    conn = _connect()
+    try:
+        conn.execute("""
+            INSERT OR REPLACE INTO seen_registry (
+                key, url, name, email, status, reason, comment_link,
+                language, attempts, driver, meta_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (
+                SELECT COALESCE(created_at, ?) FROM seen_registry WHERE key = ?
+            ), ?)
+        """, (
+            key,
+            url.strip(),
+            name.strip() or "",
+            email.strip() or "",
+            status,
+            meta.get("reason", "") if meta else "",
+            meta.get("comment_link", "") if meta else "",
+            meta.get("language", "") if meta else "",
+            meta.get("attempts", 0) if meta else 0,
+            meta.get("driver", "") if meta else "",
+            meta_json,
+            now,  # created_at (only set for new inserts)
+            key,  # subquery for existing created_at
+            now,  # updated_at
+        ))
+    except Exception as e:
+        log.warning("[registry] mark_seen error: %s", e)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def get_meta(
+    url: str,
+    content: str,
+    name: str,
+    email: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Get metadata for a previously processed URL+content.
+    Returns None if not found.
+    """
+    _ensure_schema()
+    key = _make_key(url, content, name, email)
+    
+    conn = _connect()
+    try:
+        import json
+        cursor = conn.execute("""
+            SELECT status, reason, comment_link, language, attempts, driver, meta_json, created_at
+            FROM seen_registry WHERE key = ?
+        """, (key,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        
+        return {
+            "status": row[0],
+            "reason": row[1],
+            "comment_link": row[2],
+            "language": row[3],
+            "attempts": row[4],
+            "driver": row[5],
+            "meta": json.loads(row[6]) if row[6] else {},
+            "created_at": row[7],
+        }
+    except Exception as e:
+        log.warning("[registry] get_meta error: %s", e)
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def cleanup_old_records(days: int = 30) -> int:
+    """
+    Remove records older than N days.
+    Returns number of deleted records.
+    """
+    _ensure_schema()
+    import time
+    cutoff = time.time() - (days * 24 * 60 * 60)
+    
+    conn = _connect()
+    try:
+        cursor = conn.execute(
+            "DELETE FROM seen_registry WHERE created_at < ? AND status != 'OK'",
+            (cutoff,)
+        )
+        deleted = cursor.rowcount
+        conn.execute("VACUUM")  # Reclaim space
+        log.info("[registry] Cleaned up %d old records", deleted)
+        return deleted
+    except Exception as e:
+        log.warning("[registry] cleanup error: %s", e)
+        return 0
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def get_stats() -> Dict[str, Any]:
+    """Get registry statistics."""
+    _ensure_schema()
+    conn = _connect()
+    try:
+        stats = {}
+        
+        cursor = conn.execute("SELECT COUNT(*) FROM seen_registry")
+        stats["total"] = cursor.fetchone()[0]
+        
+        cursor = conn.execute("SELECT COUNT(*) FROM seen_registry WHERE status = 'OK'")
+        stats["success"] = cursor.fetchone()[0]
+        
+        cursor = conn.execute("SELECT COUNT(*) FROM seen_registry WHERE status = 'FAILED'")
+        stats["failed"] = cursor.fetchone()[0]
+        
+        cursor = conn.execute("SELECT MAX(created_at) FROM seen_registry")
+        stats["latest"] = cursor.fetchone()[0]
+        
+        return stats
+    except Exception as e:
+        log.warning("[registry] stats error: %s", e)
+        return {}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def reset():
+    """Reset registry (for testing)."""
+    global _initialized
+    _initialized = False
+    
+    conn = _connect()
+    try:
+        conn.execute("DROP TABLE IF EXISTS seen_registry")
+    finally:
+        conn.close()
+    
+    # Remove database file
+    try:
+        Path(REGISTRY_DB).unlink(missing_ok=True)
+    except Exception:
+        pass
+</parameter>

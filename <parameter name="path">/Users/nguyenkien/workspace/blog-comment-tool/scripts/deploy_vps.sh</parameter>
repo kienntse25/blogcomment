@@ -1,0 +1,135 @@
+<parameter name="content">#!/usr/bin/env bash
+set -euo pipefail
+
+# ============================================================
+# Blog Comment Tool - VPS Deployment Script
+# Optimized for 8GB RAM VPS
+# ============================================================
+
+PROJECT_DIR="${1:-$HOME/blog-comment-tool}"
+REDIS_PORT="${REDIS_PORT:-6379}"
+CELERY_WORKERS="${CELERY_WORKERS:-4}"
+BROWSER_POOL_SIZE="${BROWSER_POOL_SIZE:-8}"
+
+echo "🚀 Deploying Blog Comment Tool to $PROJECT_DIR"
+echo "================================================"
+
+# 1. Clone or update repository
+if [ -d "$PROJECT_DIR/.git" ]; then
+    echo "📦 Updating existing installation..."
+    cd "$PROJECT_DIR"
+    git pull origin main
+else
+    echo "📦 Cloning repository..."
+    git clone https://github.com/kienntse25/blogcomment.git "$PROJECT_DIR"
+    cd "$PROJECT_DIR"
+fi
+
+# 2. Setup Python environment
+echo "🐍 Setting up Python environment..."
+if [ ! -d ".venv" ]; then
+    python3 -m venv .venv
+fi
+source .venv/bin/activate
+pip install --upgrade pip -q
+pip install -r requirements.txt -q
+
+# 3. Install Chrome/Chromium
+echo "🌐 Installing Chrome..."
+if ! command -v google-chrome &> /dev/null; then
+    if command -v apt-get &> /dev/null; then
+        apt-get update -qq
+        apt-get install -y -qq chromium-browser chromium-chromedriver
+    elif command -v yum &> /dev/null; then
+        yum install -y -q chromium chromedriver
+    fi
+fi
+
+# 4. Configure environment
+echo "⚙️ Configuring environment..."
+cat > .env << EOF
+# Browser Pool (Critical for RAM)
+BROWSER_POOL_SIZE=$BROWSER_POOL_SIZE
+BROWSER_MAX_USES=50
+
+# Performance Settings
+HEADLESS=true
+DISABLE_IMAGES=true
+MAX_ATTEMPTS=2
+FIND_TIMEOUT=6
+PAGE_LOAD_TIMEOUT=20
+
+# Celery
+CELERY_BROKER_URL=redis://localhost:$REDIS_PORT/0
+CELERY_RESULT_BACKEND=redis://localhost:$REDIS_PORT/0
+
+# Logging
+SCRIPT_LOG=logs/blog_comment_tool.log
+EOF
+
+# 5. Create required directories
+echo "📁 Creating directories..."
+mkdir -p logs data/failshots
+
+# 6. Setup Redis
+echo "🗄️ Setting up Redis..."
+if ! pgrep -x redis-server > /dev/null; then
+    echo "Starting Redis on port $REDIS_PORT..."
+    redis-server --daemonize yes --port $REDIS_PORT --maxmemory 512mb --maxmemory-policy allkeys-lru
+else
+    echo "Redis already running"
+fi
+
+# 7. Create systemd service files
+echo "📝 Creating systemd services..."
+
+cat > /etc/systemd/system/blog-comment-worker.service << EOF
+[Unit]
+Description=Blog Comment Tool - Celery Worker
+After=network.target redis.service
+
+[Service]
+Type=simple
+User=$USER
+WorkingDirectory=$PROJECT_DIR
+Environment=PATH=$PROJECT_DIR/.venv/bin
+Environment=CELERY_BROKER_URL=redis://localhost:$REDIS_PORT/0
+ExecStart=$PROJECT_DIR/.venv/bin/celery -A src.celery_app.celery worker \\
+    --loglevel=info \\
+    --concurrency=$CELERY_WORKERS \\
+    --pool=prefork \\
+    --max-tasks-per-child=1000
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# 8. Start services
+echo "▶️ Starting services..."
+systemctl daemon-reload
+systemctl enable blog-comment-worker
+systemctl start blog-comment-worker
+
+# 9. Verify deployment
+echo "✅ Verifying deployment..."
+sleep 3
+systemctl status blog-comment-worker --no-pager
+
+echo ""
+echo "================================================"
+echo "🎉 Deployment complete!"
+echo ""
+echo "Useful commands:"
+echo "  View logs:     journalctl -u blog-comment-worker -f"
+echo "  Stop:          systemctl stop blog-comment-worker"
+echo "  Restart:       systemctl restart blog-comment-worker"
+echo "  Check status:  systemctl status blog-comment-worker"
+echo ""
+echo "To run a campaign:"
+echo "  cd $PROJECT_DIR"
+echo "  source .venv/bin/activate"
+echo "  python push_jobs_from_excel.py --input data/comments.xlsx"
+echo "================================================"
+</parameter>

@@ -1,0 +1,44 @@
+<parameter name="content"># Blog Comment Tool - Optimization Plan
+
+## Mục tiêu
+- **8k links/ngày** với **3-4 campaigns** song song
+- **8GB RAM VPS** - tối ưu memory usage
+- **WordPress blogs** (phổ biến nhất)
+
+## Kế hoạch thực hiện
+
+### Phase 1: Performance Core (High Priority)
+- [ ] 1.1 Browser Pool - reuse Chrome instances (giảm RAM từ 400MB xuống 150MB/task)
+- [ ] 1.2 Optimize registry với connection pooling + WAL mode
+- [ ] 1.3 Batch proxy loading với hot-reload
+- [ ] 1.4智能重试 - chỉ retry DNS/network errors
+
+### Phase 2: Code Cleanup
+- [ ] 2.1 Refactor `process_job` thành các methods nhỏ
+- [ ] 2.2 Thêm type hints cho tất cả functions
+- [ ] 2.3 Tách WordPress-specific logic riêng
+
+### Phase 3: Stability & Monitoring
+- [ ] 3.1 Tối ưu timeout settings cho WordPress
+- [ ] 3.2 Health check mechanism
+- [ ] 3.3 Graceful shutdown
+- [ ] 3.4 Logging improvement
+
+## Thông số đề xuất cho VPS 8GB
+
+| Thông số | Giá trị | Lý do |
+|----------|---------|-------|
+| CONCURRENT_WORKERS | 8-10 | 8GB RAM / ~800MB/worker |
+| BROWSER_POOL_SIZE | 12 | Browser pool cho 10 workers |
+| MAX_ATTEMPTS | 2 | Giảm retry không cần thiết |
+| PAGE_LOAD_TIMEOUT | 20 | WordPress thường load nhanh |
+| FIND_TIMEOUT | 6 | Forms tìm nhanh trên WP |
+| EXTRA_ATTEMPTS_ON_DRIVER_FAIL | 0 | Không retry driver crash |
+| FLUSH_EVERY | 50 | Giảm I/O |
+
+## Metrics cần theo dõi
+- Links/hour
+- Success rate %
+- RAM usage
+- Proxy rotation effectiveness
+</parameter>

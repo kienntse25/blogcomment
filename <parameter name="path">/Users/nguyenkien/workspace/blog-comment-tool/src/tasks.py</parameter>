@@ -1,0 +1,75 @@
+<parameter name="content">"""
+Celery Tasks - Optimized for high-throughput comment processing.
+Uses browser pooling for efficient resource management.
+"""
+from __future__ import annotations
+import logging
+from typing import Dict, Any
+
+from .celery_app import celery
+from .worker_lib import run_one_link
+
+log = logging.getLogger("tasks")
+
+
+@celery.task(
+    bind=True,
+    max_retries=0,  # Retry logic handled in run_one_link
+    acks_late=True,
+    reject_on_worker_lost=True,
+)
+def run_comment(self, job: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Process a single comment job.
+    
+    This is the main Celery task that processes one URL from the queue.
+    Uses browser pooling for efficient resource reuse.
+    """
+    url = job.get("url", "unknown")
+    log.info("[tasks] Processing: %s", url[:60])
+    
+    try:
+        result = run_one_link(job)
+        
+        # Log result
+        status = result.get("status", "UNKNOWN")
+        reason = result.get("reason", "")[:50]
+        duration = result.get("duration_sec", 0)
+        
+        log.info(
+            "[tasks] Completed: %s status=%s reason=%s duration=%.2fs",
+            url[:60], status, reason, duration
+        )
+        
+        return result
+    
+    except Exception as e:
+        log.exception("[tasks] Fatal error processing %s: %s", url[:60], e)
+        return {
+            "url": url,
+            "status": "FAILED",
+            "reason": f"Fatal: {type(e).__name__}: {e}",
+            "comment_link": "",
+            "duration_sec": 0,
+            "language": "unknown",
+            "attempts": 0,
+        }
+
+
+@celery.task
+def cleanup_browser_pool() -> Dict[str, str]:
+    """
+    Cleanup browser pool resources.
+    Call this during worker shutdown or periodically.
+    """
+    from .browser_pool import shutdown_pool
+    shutdown_pool()
+    return {"status": "cleaned"}
+
+
+@celery.task
+def get_task_stats() -> Dict[str, Any]:
+    """Get processing statistics."""
+    from .worker_lib import get_worker_stats
+    return get_worker_stats()
+</parameter>
