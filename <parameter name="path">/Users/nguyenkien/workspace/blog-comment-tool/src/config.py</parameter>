@@ -1,0 +1,144 @@
+<parameter name="content">"""
+Configuration - Optimized for 8GB VPS with high-throughput processing.
+"""
+from __future__ import annotations
+import os
+from typing import Iterable
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_float(name: str, default: float) -> float:
+    val = os.getenv(name)
+    if val is None:
+        return float(default)
+    try:
+        return float(val)
+    except ValueError:
+        return float(default)
+
+
+def _env_int(name: str, default: int) -> int:
+    val = os.getenv(name)
+    if val is None:
+        return int(default)
+    try:
+        return int(val)
+    except ValueError:
+        return int(default)
+
+
+def _parse_versions(raw: str | None, fallback: Iterable[int]) -> list[int]:
+    if not raw:
+        return list(fallback)
+    out: list[int] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(int(part))
+        except ValueError:
+            continue
+    return out or list(fallback)
+
+
+def _parse_list(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+# ============== BROWSER POOL (Critical for RAM optimization) ==============
+BROWSER_POOL_SIZE = _env_int("BROWSER_POOL_SIZE", 8)  # 8 browsers for 8GB RAM
+BROWSER_MAX_USES = _env_int("BROWSER_MAX_USES", 50)  # Restart after 50 tasks
+BROWSER_IDLE_TIMEOUT = _env_float("BROWSER_IDLE_TIMEOUT", 300)  # 5 minutes
+
+# ============== REGISTRY (SQLite optimization) ==============
+REGISTRY_POOL_SIZE = _env_int("REGISTRY_POOL_SIZE", 10)
+REGISTRY_DB = os.getenv("REGISTRY_DB", "data/registry.sqlite3")
+SEEN_DB = REGISTRY_DB  # backwards compatibility
+
+# ============== TIMEOUTS (Optimized for WordPress) ==============
+FIND_TIMEOUT = _env_float("FIND_TIMEOUT", 6.0)  # WordPress forms load fast
+PAGE_LOAD_TIMEOUT = _env_int("PAGE_LOAD_TIMEOUT", 20)  # Standard WP page load
+COMMENT_FORM_WAIT_SEC = _env_float("COMMENT_FORM_WAIT_SEC", 8.0)  # Lazy-load wait
+AFTER_SUBMIT_PAUSE = _env_float("AFTER_SUBMIT_PAUSE", 1.5)  # Reduced from 2.0
+
+# ============== RETRY LOGIC (Smart retry for efficiency) ==============
+MAX_ATTEMPTS = _env_int("MAX_ATTEMPTS", 2)  # Reduce unnecessary retries
+RETRY_DELAY_SEC = _env_float("RETRY_DELAY_SEC", 2.0)  # Faster retry
+EXTRA_ATTEMPTS_ON_DRIVER_FAIL = _env_int("EXTRA_ATTEMPTS_ON_DRIVER_FAIL", 0)  # No driver retry
+RETRY_NO_COMMENT = _env_bool("RETRY_NO_COMMENT", False)  # Skip "comment not found" retry
+
+# ============== BROWSER SETTINGS ==============
+HEADLESS = _env_bool("HEADLESS", True)  # Always headless on VPS
+PAGE_LOAD_STRATEGY = os.getenv("PAGE_LOAD_STRATEGY", "normal")
+DISABLE_IMAGES = _env_bool("DISABLE_IMAGES", True)  # Critical for speed
+DISABLE_IMAGES = _env_bool("DISABLE_IMAGES", True)  # Critical for speed
+USER_AGENT = os.getenv(
+    "USER_AGENT",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+)
+
+# ============== CHROME FLAGS ==============
+CHROME_FLAGS = os.getenv(
+    "CHROME_FLAGS",
+    "--headless=new --disable-gpu --disable-software-rasterizer "
+    "--no-sandbox --disable-dev-shm-usage --window-size=1280,2400 "
+    "--disable-blink-features=AutomationControlled "
+    "--disable-features=IsolateOrigins,site-per-process "
+    "--remote-allow-origins=* --disable-extensions"
+)
+
+# ============== UNDETECTED-CHROME OPTIONS ==============
+USE_UC = _env_bool("USE_UC", True)  # Use undetected-chromedriver by default
+UC_USE_SUBPROCESS = _env_bool("UC_USE_SUBPROCESS", True)
+UC_CLEAR_CACHE = _env_bool("UC_CLEAR_CACHE", False)
+RETRY_DRIVER_VERSIONS = _parse_versions(
+    os.getenv("RETRY_DRIVER_VERSIONS"),
+    [0, 131, 130],  # Try auto (0) first, then specific versions
+)
+
+# ============== SCROLLING ==============
+FAST_SCROLL_TO_BOTTOM = _env_bool("FAST_SCROLL_TO_BOTTOM", True)
+ATTACH_ANCHOR = _env_bool("ATTACH_ANCHOR", True)
+
+# ============== PROXY CONFIGURATION ==============
+PROXY_URL = (os.getenv("PROXY_URL") or "").strip() or None
+PROXY_LIST = _parse_list(os.getenv("PROXY_LIST", ""))
+PROXY_FILE = (os.getenv("PROXY_FILE") or "").strip() or None
+PROXY_XLSX = (os.getenv("PROXY_XLSX") or "").strip() or None
+PROXY_SCHEME = (os.getenv("PROXY_SCHEME") or "http").strip()
+PROXY_HOST = (os.getenv("PROXY_HOST") or "").strip() or None
+PROXY_USER = (os.getenv("PROXY_USER") or "").strip() or None
+PROXY_PASS = (os.getenv("PROXY_PASS") or "").strip() or None
+
+# ============== OUTPUT SETTINGS ==============
+INPUT_XLSX = os.getenv("INPUT_XLSX", "data/comments.xlsx")
+OUTPUT_XLSX = os.getenv("OUTPUT_XLSX", "data/comments_out.xlsx")
+BATCH_SIZE = _env_int("BATCH_SIZE", 50)
+PAUSE_MIN = _env_float("PAUSE_MIN", 0.2)
+PAUSE_MAX = _env_float("PAUSE_MAX", 0.5)
+FLUSH_EVERY = _env_int("FLUSH_EVERY", 50)  # Write progress every N results
+
+# ============== DEBUGGING ==============
+SCREENSHOT_ON_FAIL = _env_bool("SCREENSHOT_ON_FAIL", False)
+FAILSHOT_DIR = os.getenv("FAILSHOT_DIR", "logs/failshots")
+SCRIPT_LOG = os.getenv("SCRIPT_LOG", "logs/blog_comment_tool.log")
+
+# ============== SAFETY ==============
+RESPECT_ROBOTS = _env_bool("RESPECT_ROBOTS", False)
+LANG_DETECT_MIN_CHARS = _env_int("LANG_DETECT_MIN_CHARS", 100)
+
+# ============== LEGACY ALIASES (for backwards compatibility) ==============
+# These are used by older code paths
+ALLOWED_DOMAINS_FILE = (os.getenv("ALLOWED_DOMAINS_FILE") or "").strip() or None
+STOP_LOADING_ON_FORM_FOUND = _env_bool("STOP_LOADING_ON_FORM_FOUND", False)
+</parameter>

@@ -59,6 +59,8 @@ Gợi ý tối ưu tốc độ (tuỳ chọn):
 export PAGE_LOAD_STRATEGY=eager
 export DISABLE_IMAGES=true
 export STOP_LOADING_ON_FORM_FOUND=true
+export MAX_ATTEMPTS=1
+export EXTRA_ATTEMPTS_ON_DRIVER_FAIL=0
 ```
 
 - Terminal 2 (run 1 file):
@@ -140,6 +142,7 @@ Tách riêng các URL bị `Comment box not found` để chạy batch chậm hơ
 ```bash
 export COMMENT_FORM_WAIT_SEC=25
 export SEARCH_IFRAMES=true
+export RETRY_NO_COMMENT=true
 python push_jobs_from_excel.py --input data/comments_out_no_comment.xlsx --output data/comments_out_retry_no_comment.xlsx --limit 0
 ```
 

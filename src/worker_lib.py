@@ -492,12 +492,18 @@ def _should_retry(reason: str) -> bool:
         "captcha",
         "already attempted",
         "no submit button",
+        "tls/privacy error",
+        "not found (404)",
         "invalid url",
         "third-party",
         "requires login",
         "remote disconnected",
         "connection aborted",
     )
+    # By default, do not retry "no comment form" in phase-1 runs (huge time sink).
+    # You can enable retries by setting RETRY_NO_COMMENT=true.
+    if "comment box not found" in reason_lower:
+        return os.getenv("RETRY_NO_COMMENT", "false").strip().lower() in {"1", "true", "yes", "on"}
     return not any(tok in reason_lower for tok in fatal_tokens)
 
 def run_one_link(job: dict) -> dict:
@@ -557,9 +563,9 @@ def run_one_link(job: dict) -> dict:
 
     extra = 0
     try:
-        extra = int(os.getenv("EXTRA_ATTEMPTS_ON_DRIVER_FAIL", "1"))
+        extra = int(os.getenv("EXTRA_ATTEMPTS_ON_DRIVER_FAIL", "0"))
     except ValueError:
-        extra = 1
+        extra = 0
     max_attempts = max(1, MAX_ATTEMPTS + max(0, extra))
 
     for attempt in range(1, max_attempts + 1):

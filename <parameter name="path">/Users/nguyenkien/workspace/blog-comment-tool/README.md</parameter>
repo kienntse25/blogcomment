@@ -1,0 +1,266 @@
+<parameter name="content"># Blog Comment Tool - High Performance Edition
+
+Automated comment posting tool optimized for high-throughput processing on VPS.
+
+## 🎯 Performance Targets
+
+| Metric | Target | Configuration |
+|--------|--------|---------------|
+| Throughput | 8k links/day | 8 workers, browser pool |
+| Memory | <8GB RAM | 8 browsers @ ~800MB each |
+| Success Rate | >70% | Smart retry + proxy rotation |
+| Concurrent Tasks | 8-10 | Celery workers |
+
+## 🚀 Quick Start
+
+### 1. Install Dependencies
+
+```bash
+# Create virtual environment
+make venv
+
+# Install Python dependencies
+make install
+```
+
+### 2. Configure Environment
+
+```bash
+# Copy example env
+cp .env.example .env
+
+# Edit with your settings
+nano .env
+```
+
+Key settings for high performance:
+
+```bash
+# Browser Pool (CRITICAL for RAM)
+BROWSER_POOL_SIZE=8
+BROWSER_MAX_USES=50
+
+# Timeouts (WordPress optimized)
+PAGE_LOAD_TIMEOUT=20
+FIND_TIMEOUT=6
+MAX_ATTEMPTS=2
+
+# Proxy (use quality proxies)
+PROXY_FILE=data/proxies.txt
+DISABLE_IMAGES=true
+```
+
+### 3. Prepare Input File
+
+Create `data/comments.xlsx` with columns:
+- `URL` - Target article URL
+- `Anchor` - Anchor text for link
+- `Website` - URL to link back
+- `Nội Dung` - Comment content
+- `Name` - Author name
+- `Email` - Author email
+
+### 4. Start Workers
+
+```bash
+# Terminal 1: Start Redis
+redis-server
+
+# Terminal 2: Start Celery workers
+bash scripts/run_worker.sh
+
+# Terminal 3: Run campaign
+python push_jobs_from_excel.py --input data/comments.xlsx --output data/comments_out.xlsx
+```
+
+## 📁 Project Structure
+
+```
+blog-comment-tool/
+├── src/
+│   ├── browser_pool.py    # Reusable Chrome instances (NEW!)
+│   ├── commenter.py       # Core comment logic
+│   ├── config.py          # Optimized configuration
+│   ├── registry.py        # SQLite with WAL mode (NEW!)
+│   ├── tasks.py           # Celery task definitions
+│   ├── worker_lib.py      # High-throughput worker (NEW!)
+│   └── driver_factory.py  # Driver creation
+├── data/
+│   ├── comments.xlsx      # Input file
+│   ├── comments_out.xlsx  # Output results
+│   ├── proxies.txt        # Proxy list
+│   └── allowed_domains.txt
+├── scripts/
+│   ├── run.sh             # Start workers
+│   ├── run_worker.sh      # Worker script
+│   └── vps.sh             # VPS deployment
+├── logs/
+├── .env                   # Environment config
+└── README.md
+```
+
+## ⚙️ Environment Variables
+
+### Browser Pool Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BROWSER_POOL_SIZE` | 8 | Number of browsers in pool |
+| `BROWSER_MAX_USES` | 50 | Restart browser after N tasks |
+| `BROWSER_IDLE_TIMEOUT` | 300 | Seconds before idle browser expires |
+
+### Performance Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MAX_ATTEMPTS` | 2 | Max attempts per URL |
+| `FIND_TIMEOUT` | 6s | Element find timeout |
+| `PAGE_LOAD_TIMEOUT` | 20s | Page load timeout |
+| `DISABLE_IMAGES` | true | Disable images for speed |
+| `EXTRA_ATTEMPTS_ON_DRIVER_FAIL` | 0 | Extra attempts on driver crash |
+
+### Proxy Settings
+
+| Variable | Format | Example |
+|----------|--------|---------|
+| `PROXY_URL` | single proxy | `http://user:pass@host:port` |
+| `PROXY_LIST` | comma-separated | `host1:port,host2:port` |
+| `PROXY_FILE` | file path | `data/proxies.txt` |
+| `PROXY_XLSX` | Excel file | `data/proxies.xlsx` |
+
+### Queue Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CELERY_BROKER_URL` | redis://localhost:6379/0 | Redis connection |
+| `CELERY_RESULT_BACKEND` | redis://localhost:6379/0 | Results backend |
+| `CELERY_QUEUE` | camp_test | Default queue name |
+
+## 🔧 Command Line Options
+
+### push_jobs_from_excel.py
+
+```bash
+python push_jobs_from_excel.py \
+    --input data/comments.xlsx \
+    --output data/comments_out.xlsx \
+    --queue campaign_a \
+    --limit 1000 \
+    --flush-every 50
+```
+
+| Option | Description |
+|--------|-------------|
+| `--input` | Input Excel file |
+| `--output` | Output Excel file |
+| `--queue` | Celery queue name |
+| `--limit` | Max rows to process |
+| `--flush-every` | Write progress every N rows |
+| `--sync-one` | Run single job without Celery |
+
+### Worker Scripts
+
+```bash
+# Start worker with specific queue
+CELERY_QUEUE=camp_a bash scripts/run_worker.sh
+
+# Multiple workers (in separate terminals)
+CELERY_QUEUE=camp_a bash scripts/run_worker.sh &
+CELERY_QUEUE=camp_b bash scripts/run_worker.sh &
+```
+
+## 📊 Monitoring
+
+### Check Worker Status
+
+```bash
+# View active queues
+redis-cli KEYS '*celery*'
+
+# Check queue length
+redis-cli LLEN celery
+
+# View worker logs
+tail -f logs/worker.log
+```
+
+### Output File Structure
+
+Output Excel contains columns:
+- Original input columns
+- `Status` - OK/FAILED
+- `Reason` - Success/failure reason
+- `Comment Link` - Permalinks (if available)
+- `Duration (sec)` - Processing time
+- `Language` - Detected page language
+- `Attempts` - Number of attempts
+- `Updated At` - Timestamp
+
+## 🚨 Troubleshooting
+
+### Memory Issues
+
+```bash
+# Reduce browser pool size
+export BROWSER_POOL_SIZE=4
+
+# Reduce browser memory
+export DISABLE_IMAGES=true
+export CHROME_FLAGS="... --disable-extensions --disable-gpu"
+```
+
+### Slow Processing
+
+```bash
+# Optimize timeouts
+export FIND_TIMEOUT=4
+export PAGE_LOAD_TIMEOUT=15
+export MAX_ATTEMPTS=1
+
+# Check proxy quality
+curl -x proxy:port https://example.com
+```
+
+### Captcha/Block Issues
+
+```bash
+# Rotate user agents
+export USER_AGENT="..."
+
+# Use residential proxies
+export PROXY_FILE=data/residential_proxies.txt
+```
+
+## 📈 Performance Tuning
+
+### For 8GB VPS
+
+```bash
+# .env configuration
+BROWSER_POOL_SIZE=8
+BROWSER_MAX_USES=50
+MAX_ATTEMPTS=2
+EXTRA_ATTEMPTS_ON_DRIVER_FAIL=0
+DISABLE_IMAGES=true
+DISABLE_IMAGES=true
+```
+
+### For 16GB VPS
+
+```bash
+BROWSER_POOL_SIZE=16
+BROWSER_MAX_USES=100
+MAX_ATTEMPTS=3
+```
+
+## 🔒 Security Notes
+
+- Never commit `.env` with real credentials
+- Use read-only accounts for comment posting
+- Rotate proxies regularly
+- Monitor for suspicious activity
+
+## 📝 License
+
+MIT License - Use responsibly and in accordance with website terms of service.
+</parameter>

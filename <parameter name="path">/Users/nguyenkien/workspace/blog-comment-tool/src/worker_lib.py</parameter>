@@ -1,0 +1,443 @@
+<parameter name="content">"""
+Worker Library - Optimized for high-throughput comment posting.
+Uses browser pooling, smart retry logic, and efficient proxy rotation.
+"""
+from __future__ import annotations
+import os
+import time
+import socket
+import logging
+import random
+from typing import Optional, Dict, Any, Tuple
+from datetime import datetime
+
+from .config import (
+    HEADLESS,
+    RETRY_DRIVER_VERSIONS,
+    MAX_ATTEMPTS,
+    RETRY_DELAY_SEC,
+    RESPECT_ROBOTS,
+    USER_AGENT,
+    ALLOWED_DOMAINS_FILE,
+    SCREENSHOT_ON_FAIL,
+    FAILSHOT_DIR,
+    PAGE_LOAD_STRATEGY,
+    DISABLE_IMAGES,
+    PROXY_URL,
+    PROXY_LIST,
+    PROXY_FILE,
+    PROXY_XLSX,
+    PROXY_SCHEME,
+    PROXY_HOST,
+    PROXY_USER,
+    PROXY_PASS,
+    EXTRA_ATTEMPTS_ON_DRIVER_FAIL,
+)
+from .registry import was_seen, mark_seen, get_meta
+from . import commenter
+from .browser_pool import get_pool
+from .utils.allowlist import is_url_allowed
+from .utils.robots import is_allowed as robots_allowed
+
+log = logging.getLogger("worker_lib")
+
+# Proxy cache with file watching
+_PROXY_CACHE: list[str] | None = None
+_PROXY_MTIME: float | None = None
+
+
+def _get_proxies() -> list[str]:
+    """Get proxies from all sources with caching."""
+    global _PROXY_CACHE, _PROXY_MTIME
+    
+    # Check file mtime for hot reload
+    if PROXY_FILE:
+        try:
+            st = os.stat(PROXY_FILE)
+            if _PROXY_MTIME != st.st_mtime:
+                _PROXY_MTIME = st.st_mtime
+                _PROXY_CACHE = None  # Force reload
+        except (FileNotFoundError, OSError):
+            pass
+    
+    if _PROXY_CACHE is not None:
+        return _PROXY_CACHE
+    
+    raw: list[str] = []
+    
+    # Priority 1: Environment variable (single proxy)
+    if PROXY_URL:
+        raw.append(PROXY_URL)
+    
+    # Priority 2: PROXY_LIST env (comma-separated)
+    if PROXY_LIST:
+        raw.extend(PROXY_LIST)
+    
+    # Priority 3: File-based proxies
+    if PROXY_FILE:
+        try:
+            with open(PROXY_FILE, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        raw.append(line)
+        except OSError:
+            pass
+    
+    # Priority 4: Excel-based proxies
+    if PROXY_XLSX:
+        try:
+            import pandas as pd
+            df = pd.read_excel(PROXY_XLSX, engine="openpyxl")
+            if not df.empty:
+                for val in df.iloc[:, 0]:
+                    if val and str(val).strip():
+                        raw.append(str(val).strip())
+        except Exception:
+            pass
+    
+    # Normalize and deduplicate
+    seen: set[str] = set()
+    proxies: list[str] = []
+    for p in raw:
+        p = _normalize_proxy(p)
+        if p and p not in seen:
+            seen.add(p)
+            proxies.append(p)
+    
+    _PROXY_CACHE = proxies
+    return proxies
+
+
+def _normalize_proxy(raw: str) -> str | None:
+    """Normalize proxy format."""
+    if not raw:
+        return None
+    
+    text = str(raw).strip()
+    if not text or text.lower() in {"nan", "none"} or text.startswith("#"):
+        return None
+    
+    # Already has protocol
+    if "://" in text:
+        return text
+    
+    # Just port number - use PROXY_HOST
+    if text.isdigit():
+        if PROXY_HOST:
+            scheme = PROXY_SCHEME or "http"
+            auth = ""
+            if PROXY_USER and PROXY_PASS:
+                auth = f"{PROXY_USER}:{PROXY_PASS}@"
+            return f"{scheme}://{auth}{PROXY_HOST}:{text}"
+        return None
+    
+    # host:port format
+    if ":" in text:
+        parts = text.rsplit(":", 1)
+        if parts[-1].isdigit():
+            scheme = PROXY_SCHEME or "http"
+            auth = ""
+            if PROXY_USER and PROXY_PASS:
+                auth = f"{PROXY_USER}:{PROXY_PASS}@"
+            return f"{scheme}://{auth}{text}"
+    
+    return text
+
+
+def _pick_proxy(exclude: str | None = None) -> str | None:
+    """Pick random proxy, optionally excluding one."""
+    proxies = _get_proxies()
+    if not proxies:
+        return PROXY_URL
+    
+    available = [p for p in proxies if p != exclude]
+    if available:
+        return random.choice(available)
+    return proxies[0] if proxies else None
+
+
+def _save_fail_artifacts(driver, url: str, reason: str) -> Dict[str, str]:
+    """Save screenshot + HTML for debugging."""
+    if not SCREENSHOT_ON_FAIL:
+        return {}
+    
+    try:
+        Path(FAILSHOT_DIR).mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return {}
+    
+    from urllib.parse import urlparse
+    host = ""
+    try:
+        host = (urlparse(url).netloc or "").split("@")[-1]
+    except Exception:
+        host = ""
+    
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    safe_host = "".join(c if c.isalnum() or c in "._-" else "_" for c in host)[:50]
+    base = f"{stamp}_{safe_host}"
+    
+    out: Dict[str, str] = {}
+    
+    try:
+        png = str(Path(FAILSHOT_DIR) / f"{base}.png")
+        driver.save_screenshot(png)
+        out["screenshot"] = png
+    except Exception:
+        pass
+    
+    try:
+        htmlp = str(Path(FAILSHOT_DIR) / f"{base}.html")
+        src = driver.page_source or ""
+        Path(htmlp).write_text(src, encoding="utf-8", errors="ignore")
+        out["html"] = htmlp
+    except Exception:
+        pass
+    
+    try:
+        metap = str(Path(FAILSHOT_DIR) / f"{base}.txt")
+        Path(metap).write_text(f"url={url}\nreason={reason}\n", encoding="utf-8")
+        out["meta"] = metap
+    except Exception:
+        pass
+    
+    return out
+
+
+def _should_retry(reason: str) -> bool:
+    """
+    Smart retry decision based on error type.
+    Only retry transient errors that might succeed on retry.
+    """
+    if not reason:
+        return True
+    
+    reason_lower = reason.lower()
+    
+    # Never retry these fatal errors
+    fatal = (
+        "captcha",
+        "requires login",
+        "login required",
+        "already attempted",
+        "no submit button",
+        "tls/privacy error",
+        "not found (404)",
+        "404",
+        "invalid url",
+        "third-party",
+        "disallowed by robots.txt",
+        "not allowed by allowlist",
+    )
+    
+    if any(tok in reason_lower for tok in fatal):
+        return False
+    
+    # DNS errors - retry if we have multiple proxies
+    dns_tokens = ("dns error", "dns not resolved", "name or service", "name not known")
+    if any(tok in reason_lower for tok in dns_tokens):
+        try:
+            return len(_get_proxies()) > 1
+        except Exception:
+            return False
+    
+    # Connection errors - retry
+    conn_tokens = (
+        "remote disconnected",
+        "connection aborted",
+        "connection refused",
+        "webdriver session lost",
+        "chrome not reachable",
+    )
+    if any(tok in reason_lower for tok in conn_tokens):
+        return True
+    
+    # Page load timeout - retry with different proxy
+    if "page load timeout" in reason_lower:
+        return True
+    
+    # Comment box not found - controlled by env
+    if "comment box not found" in reason_lower:
+        return os.getenv("RETRY_NO_COMMENT", "false").strip().lower() in {"1", "true", "yes", "on"}
+    
+    # Default: retry
+    return True
+
+
+def run_one_link(job: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Process a single comment job.
+    
+    Args:
+        job: Dict with keys: url, anchor, content, name, email, website, attach_anchor
+    
+    Returns:
+        Dict with: url, status, reason, comment_link, duration_sec, language, attempts
+    """
+    t0 = time.time()
+    
+    # Extract job parameters
+    url = str(job.get("url", "")).strip()
+    name = str(job.get("name", "")).strip()
+    email = str(job.get("email", "")).strip()
+    content = str(job.get("content", "")).strip()
+    
+    # Validation
+    if not url:
+        return {
+            "url": "",
+            "status": "FAILED",
+            "reason": "Empty URL",
+            "comment_link": "",
+            "duration_sec": 0.0,
+            "language": "unknown",
+            "attempts": 0,
+        }
+    
+    # Guardrails: allowlist + robots.txt
+    if ALLOWED_DOMAINS_FILE and not is_url_allowed(url):
+        return {
+            "url": url,
+            "status": "FAILED",
+            "reason": "Not allowed by allowlist",
+            "comment_link": "",
+            "duration_sec": 0.0,
+            "language": "unknown",
+            "attempts": 0,
+        }
+    
+    if RESPECT_ROBOTS and not robots_allowed(url, USER_AGENT):
+        return {
+            "url": url,
+            "status": "FAILED",
+            "reason": "Disallowed by robots.txt",
+            "comment_link": "",
+            "duration_sec": 0.0,
+            "language": "unknown",
+            "attempts": 0,
+        }
+    
+    # Check if already processed successfully
+    if was_seen(url, content, name, email):
+        meta = get_meta(url, content, name, email)
+        return {
+            "url": url,
+            "status": "OK",
+            "reason": meta.get("reason", "Already processed") if meta else "Already processed",
+            "comment_link": meta.get("comment_link", "") if meta else "",
+            "duration_sec": 0.0,
+            "language": meta.get("language", "unknown") if meta else "unknown",
+            "attempts": 0,
+        }
+    
+    # Initialize tracking
+    attempts = 0
+    last_reason = ""
+    comment_link = ""
+    status = "FAILED"
+    language = "unknown"
+    last_proxy = None
+    last_driver_info = {}
+    
+    # Calculate max attempts
+    max_attempts = max(1, MAX_ATTEMPTS + max(0, int(EXTRA_ATTEMPTS_ON_DRIVER_FAIL)))
+    
+    # Get browser pool
+    pool = get_pool()
+    
+    for attempt in range(1, max_attempts + 1):
+        attempts = attempt
+        driver = None
+        driver_info = {}
+        
+        try:
+            # Pick proxy (different from previous if retrying)
+            if attempt > 1:
+                proxy = _pick_proxy(exclude=last_proxy)
+            else:
+                proxy = _pick_proxy()
+            
+            last_proxy = proxy
+            
+            # Get driver from pool
+            with pool.get_driver() as (drv, info):
+                driver = drv
+                driver_info = info
+                
+                # Process the job
+                ok, rsn, cm_link = commenter.process_job(driver, job)
+                
+                # Detect language
+                language = commenter.detect_language(driver) or "unknown"
+                
+                status = "OK" if ok else "FAILED"
+                last_reason = rsn
+                comment_link = cm_link or ""
+                
+                if ok:
+                    break
+                
+                # Check if should retry
+                if not _should_retry(rsn):
+                    break
+                
+                # Log retry info
+                log.info(
+                    "[worker_lib] Retry %d/%d for %s (reason=%s, proxy=%s)",
+                    attempt, max_attempts, url[:50], rsn, proxy[:30] if proxy else "none"
+                )
+                
+                # Wait before retry
+                if attempt < max_attempts:
+                    time.sleep(RETRY_DELAY_SEC)
+        
+        except Exception as e:
+            status = "FAILED"
+            last_reason = f"Exception: {type(e).__name__}: {e}"
+            log.exception("[worker_lib] Error processing %s", url[:50])
+            
+            if attempt < max_attempts:
+                time.sleep(RETRY_DELAY_SEC)
+        
+        finally:
+            # Cleanup handled by pool context manager
+            pass
+    
+    # Save result to registry
+    duration = round(time.time() - t0, 2)
+    
+    mark_seen(
+        url,
+        content,
+        name or "",
+        email or "",
+        {
+            "status": status,
+            "reason": last_reason,
+            "comment_link": comment_link,
+            "language": language,
+            "attempts": attempts,
+            "driver": driver_info.get("provider", "unknown"),
+        },
+    )
+    
+    return {
+        "url": url,
+        "status": status,
+        "reason": last_reason,
+        "comment_link": comment_link,
+        "duration_sec": duration,
+        "language": language,
+        "attempts": attempts,
+    }
+
+
+def get_worker_stats() -> Dict[str, Any]:
+    """Get worker statistics."""
+    pool = get_pool()
+    return {
+        "browser_pool": pool.get_stats(),
+        "registry": __import__("src.registry", fromlist=["get_stats"]).get_stats(),
+    }
+</parameter>
