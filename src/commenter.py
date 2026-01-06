@@ -446,6 +446,8 @@ def _try_open_comment_form(driver) -> bool:
       "comentario", "comentarios", "deja un comentario", "dejar un comentario", "responder",
       "коммент", "комментар", "ответить", "оставить комментарий",
       "написать комментарий", "добавить комментарий", "оставить ответ", "добавить ответ"
+      // Arabic (common on news sites)
+      , "تعليق", "التعليقات", "أضف تعليق", "أضف تعليقًا", "اترك تعليق", "اترك تعليقًا", "رد", "الرد"
     ];
     const nodes = [];
     ["button","a","summary","div","span"].forEach(tag => {
