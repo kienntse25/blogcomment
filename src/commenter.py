@@ -295,7 +295,7 @@ def _try_open_comment_form(driver) -> bool:
     const keywords = [
       "comment", "reply", "leave a comment", "add comment", "add a comment",
       "коммент", "комментар", "ответить", "оставить комментарий",
-      "написать комментарий", "добавить комментарий", "оставить ответ", "добавить ответ"
+      "написать комментарий", "добавить комментарий", "оставить ответ", "добавить ответ", "تعليق"
     ];
     const nodes = [];
     ["button","a","summary","div","span"].forEach(tag => {
