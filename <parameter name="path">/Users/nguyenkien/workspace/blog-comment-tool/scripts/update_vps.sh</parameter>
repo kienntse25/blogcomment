@@ -1,0 +1,57 @@
+<parameter name="content">#!/usr/bin/env bash
+set -euo pipefail
+
+# ============================================================
+# Blog Comment Tool - VPS Update Script
+# Chạy sau khi đã force push lên repo mới
+# ============================================================
+
+PROJECT_DIR="${1:-$HOME/blog-comment-tool}"
+SERVICE_NAME="blog-comment-worker"
+
+echo "🚀 Updating Blog Comment Tool on VPS"
+echo "================================================"
+
+# 1. Backup trước khi update
+echo "📦 Bước 1: Backup..."
+BACKUP_DIR="$PROJECT_DIR-backup-$(date +%Y%m%d-%H%M%S)"
+cp -r "$PROJECT_DIR" "$BACKUP_DIR"
+echo "✅ Backup saved to: $BACKUP_DIR"
+
+# 2. Stop services
+echo "⏹️  Bước 2: Stop services..."
+systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+echo "✅ Services stopped"
+
+# 3. Pull code mới
+echo "🔄 Bước 3: Pull code mới..."
+cd "$PROJECT_DIR"
+git fetch origin
+git reset --hard origin/main
+echo "✅ Code updated"
+
+# 4. Update dependencies
+echo "🐍 Bước 4: Update Python dependencies..."
+source .venv/bin/activate
+pip install -r requirements.txt -q
+echo "✅ Dependencies updated"
+
+# 5. Restart services
+echo "▶️  Bước 5: Restart services..."
+systemctl daemon-reload
+systemctl start "$SERVICE_NAME"
+sleep 3
+systemctl status "$SERVICE_NAME" --no-pager
+
+echo ""
+echo "================================================"
+echo "✅ Update complete!"
+echo ""
+echo "Lệnh hữu ích:"
+echo "  Xem logs:   journalctl -u $SERVICE_NAME -f"
+echo "  Restart:    systemctl restart $SERVICE_NAME"
+echo "  Status:     systemctl status $SERVICE_NAME"
+echo ""
+echo "Backup nằm ở: $BACKUP_DIR"
+echo "================================================"
+</parameter>

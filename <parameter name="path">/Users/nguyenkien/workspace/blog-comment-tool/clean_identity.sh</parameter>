@@ -1,0 +1,109 @@
+<parameter name="content">#!/bin/bash
+# 🧹 Script xóa thông tin cá nhân khỏi git history
+# Dùng để chuẩn bị thương mại hóa
+
+set -e
+
+echo "=============================================="
+echo "🧹 BẮT ĐẦU XÓA THÔNG TIN CÁ NHÂN"
+echo "=============================================="
+
+# Kiểm tra git-filter-repo
+if ! command -v git-filter-repo &> /dev/null; then
+    echo "❌ Chưa cài đặt git-filter-repo"
+    echo "   Cài đặt: pip install git-filter-repo"
+    exit 1
+fi
+
+# Bước 1: Backup
+echo ""
+echo "📦 Bước 1: Backup repo..."
+BACKUP_DIR="../blogcomment-backup-$(date +%Y%m%d-%H%M%S).git"
+cp -r .git "$BACKUP_DIR"
+echo "✅ Backup saved to: $BACKUP_DIR"
+
+# Bước 2: Hỏi thông tin mới
+echo ""
+echo "📝 Bước 2: Nhập thông tin mới cho commits"
+read -p "Nhập tên mới (Enter để xóa hoàn toàn): " NEW_NAME
+read -p "Nhập email mới (Enter để xóa hoàn toàn): " NEW_EMAIL
+echo ""
+read -p "Nhập repo URL mới (ví dụ: git@github.com:company/product.git): " NEW_REPO_URL
+
+# Bước 3: Rewrite history
+echo ""
+echo "🔄 Bước 3: Rewrite git history..."
+
+if [ -z "$NEW_NAME" ] && [ -z "$NEW_EMAIL" ]; then
+    echo "   Xóa tất cả thông tin tác giả..."
+    git filter-repo --name-callback 'return None' --email-callback 'return None' --force
+else
+    echo "   Thay thế bằng: $NEW_NAME <$NEW_EMAIL>"
+    git filter-repo --name-callback "return '$NEW_NAME'" --email-callback "return '$NEW_EMAIL'" --force
+fi
+
+echo "✅ Git history đã được rewrite"
+
+# Bước 4: Cập nhật remote URL
+echo ""
+echo "🔗 Bước 4: Cập nhật remote URL..."
+if [ -n "$NEW_REPO_URL" ]; then
+    git remote set-url origin "$NEW_REPO_URL"
+    echo "✅ Remote updated to: $NEW_REPO_URL"
+else
+    echo "⚠️  Bỏ qua cập nhật remote (chưa nhập URL mới)"
+fi
+
+# Bước 5: Cập nhật deploy script
+echo ""
+echo "📝 Bước 5: Cập nhật deploy script..."
+if [ -f "scripts/deploy_vps.sh" ] && [ -n "$NEW_REPO_URL" ]; then
+    # Chuyển đổi SSH URL sang HTTPS format cho deploy script
+    DEPLOY_URL="$NEW_REPO_URL"
+    if [[ "$DEPLOY_URL" == git@* ]]; then
+        # git@github.com:user/repo.git -> https://github.com/user/repo.git
+        DEPLOY_URL="https://github.com/${DEPLOY_URL#git@github.com:}"
+    fi
+    
+    # Thay thế URL trong deploy script
+    sed -i "s|https://github.com/kienntse25/blogcomment.git|$DEPLOY_URL|g" scripts/deploy_vps.sh
+    echo "✅ Deploy script updated to: $DEPLOY_URL"
+fi
+
+# Bước 6: Kiểm tra kết quả
+echo ""
+echo "🔍 Bước 6: Kiểm tra kết quả..."
+echo ""
+echo "5 commits gần nhất:"
+git log --oneline -5
+echo ""
+echo "Tác giả trong commits gần nhất:"
+git log -1 --format='Author: %(authorname) <%(authoremail)>'
+echo ""
+echo "Remote URL:"
+git remote get-url origin
+
+# Bước 7: Hướng dẫn push
+echo ""
+echo "=============================================="
+echo "✅ HOÀN THÀNH TẠI LOCAL!"
+echo "=============================================="
+echo ""
+echo "📌 Các bước tiếp theo:"
+echo ""
+echo "1. Force push lên repo mới:"
+echo "   git push origin main --force"
+echo ""
+echo "2. Xóa repo cũ trên GitHub sau khi push thành công"
+echo ""
+echo "3. Để deploy lên VPS mới, chạy:"
+echo "   REPO_URL=$NEW_REPO_URL bash scripts/deploy_vps.sh"
+echo ""
+echo "4. Để update VPS đã deploy, chạy trên VPS:"
+echo "   bash scripts/update_vps.sh"
+echo ""
+echo "⚠️ Lưu ý:"
+echo "   - Backup nằm ở: $BACKUP_DIR"
+echo "   - Deploy script đã được cập nhật với URL mới"
+echo ""
+</parameter>
