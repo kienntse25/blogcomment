@@ -433,6 +433,10 @@ def process_job(
     # Load page
     try:
         driver.get(url)
+        # Explicit wait for page to be fully loaded (fixes pool/browser state issues)
+        WebDriverWait(driver, PAGE_LOAD_TIMEOUT).until(
+            lambda d: d.execute_script("return document.readyState") == "complete"
+        )
     except TimeoutException:
         return False, "Page load timeout", ""
     except WebDriverException as e:
