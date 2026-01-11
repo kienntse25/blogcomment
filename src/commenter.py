@@ -25,8 +25,6 @@ from .config import FIND_TIMEOUT, AFTER_SUBMIT_PAUSE, PAGE_LOAD_TIMEOUT, LANG_DE
 DetectorFactory.seed = 0
 _TAG_RE = re.compile(r"<[^>]+>")
 
-# ---------------- Helpers ----------------
-
 def _dns_ok(u: str, timeout=5) -> Tuple[bool, str]:
     try:
         host = urlparse(u).hostname
@@ -48,7 +46,6 @@ def _wait_body(driver):
     except Exception:
         pass
 
-
 def _progressive_scroll(driver, steps: int = 6, pause: float = 0.15):
     try:
         height = driver.execute_script(
@@ -68,7 +65,6 @@ def _progressive_scroll(driver, steps: int = 6, pause: float = 0.15):
         except Exception:
             break
         time.sleep(pause)
-
 
 def _reveal_hidden_textarea(driver):
     js = """
@@ -146,7 +142,6 @@ def _set_val(driver, el, text: str):
             pass
 
 def _qsa_first(driver, selectors) -> Optional[object]:
-    # JS tìm phần tử đầu tiên hiển thị theo danh sách selector
     js = """
     const sels = arguments[0];
     for (const s of sels) {
@@ -165,7 +160,6 @@ def _qsa_first(driver, selectors) -> Optional[object]:
         raise
     except Exception:
         pass
-    # Fallback vòng lặp Python
     for s in selectors:
         try:
             el = driver.find_element(By.CSS_SELECTOR, s)
@@ -178,10 +172,6 @@ def _qsa_first(driver, selectors) -> Optional[object]:
     return None
 
 def _find_any_frame(driver, selectors, timeout=FIND_TIMEOUT) -> Tuple[Optional[object], Optional[int]]:
-    """
-    Tìm phần tử theo selectors trong main document, nếu không thấy thì duyệt qua iframes.
-    Trả về (element, index_iframe or None)
-    """
     end = time.time() + timeout
     while time.time() < end:
         try:
@@ -214,7 +204,6 @@ def _find_any_frame(driver, selectors, timeout=FIND_TIMEOUT) -> Tuple[Optional[o
         pass
     return None, None
 
-
 def _coerce_iframe_index(value) -> Optional[int]:
     if value is None:
         return None
@@ -224,7 +213,6 @@ def _coerce_iframe_index(value) -> Optional[int]:
         return int(value)
     except (ValueError, TypeError):
         return None
-
 
 def _switch_to_frame(driver, index: Optional[int]) -> bool:
     try:
@@ -250,7 +238,6 @@ def _switch_to_frame(driver, index: Optional[int]) -> bool:
         raise
     except Exception:
         return False
-
 
 def _find_with_selector(driver, selector: Optional[str], iframe_hint=None) -> Tuple[Optional[object], Optional[int]]:
     if not selector:
@@ -289,7 +276,6 @@ def _find_with_selector(driver, selector: Optional[str], iframe_hint=None) -> Tu
             pass
     return None, None
 
-
 def _try_open_comment_form(driver) -> bool:
     js = """
     const keywords = [
@@ -324,11 +310,7 @@ def _try_open_comment_form(driver) -> bool:
     except Exception:
         return False
 
-
 def detect_language(driver, fallback: str = "unknown") -> str:
-    """
-    Cố gắng phát hiện ngôn ngữ trang hiện tại. Trả về mã ISO-639-1 hoặc fallback.
-    """
     try:
         source = driver.page_source or ""
     except InvalidSessionIdException:
@@ -350,15 +332,7 @@ def detect_language(driver, fallback: str = "unknown") -> str:
 
 def _detect_platform(html_text: str) -> str:
     t = (html_text or "").lower()
-    if any(
-        token in t
-        for token in (
-            'id="disqus_thread"',
-            "data-disqus",
-            "disqus.com/embed.js",
-            "disqus.com/count.js",
-        )
-    ):
+    if any(token in t for token in ('id="disqus_thread"', "data-disqus", "disqus.com/embed.js", "disqus.com/count.js")):
         return "disqus"
     if "blogger.com" in t or 'name="blogger' in t or "g:plusone" in t:
         return "blogger"
@@ -372,11 +346,8 @@ def _detect_platform(html_text: str) -> str:
         return "wpdiscuz"
     if "g-recaptcha" in t or "hcaptcha" in t:
         return "captcha"
-    if "you must be logged in to post a comment" in t:
+    if "you must be logged in to post a comment" in t or "must be logged in to comment" in t:
         return "login"
-    if "must be logged in to comment" in t:
-        return "login"
-
     if "comment-form" in t or 'id="commentform"' in t or 'name="comment"' in t:
         return "wordpress"
     return "unknown"
@@ -386,28 +357,16 @@ def _build_comment_text(base_text: str, anchor: str, website: str) -> str:
     atext = (anchor or "").strip()
     site = (website or "").strip()
     if atext and site:
-        # Thay lần xuất hiện đầu tiên của anchor bằng thẻ a; nếu không có thì thêm cuối
         if atext in base:
-            return base.replace(
-                atext,
-                f'<a href="{html.escape(site, quote=True)}">{html.escape(atext)}</a>',
-                1,
-            )
+            return base.replace(atext, f'<a href="{html.escape(site, quote=True)}">{html.escape(atext)}</a>', 1)
         return f'{base} <a href="{html.escape(site, quote=True)}">{html.escape(atext)}</a>'
     return base or "Thank you for the article!"
-
-# ---------------- Main entry ----------------
 
 def process_job(
     driver,
     job: Dict[str, Any],
     selectors: Optional[Dict[str, Any]] = None,
 ) -> Tuple[bool, str, str]:
-    """
-    job dict: {'url','anchor','content','name','email','website'}
-    selectors: {'ta_sel','name_sel','email_sel','btn_sel','ta_iframe','btn_iframe'}
-    return: (ok:bool, reason:str, comment_link:str)
-    """
     url = str(job.get("url", "")).strip()
     anchor = str(job.get("anchor", "")) if job.get("anchor") is not None else ""
     content = str(job.get("content", "")) if job.get("content") is not None else ""
@@ -430,10 +389,8 @@ def process_job(
     except Exception:
         pass
 
-    # Load page
     try:
         driver.get(url)
-        # Explicit wait for page to be fully loaded (fixes pool/browser state issues)
         WebDriverWait(driver, PAGE_LOAD_TIMEOUT).until(
             lambda d: d.execute_script("return document.readyState") == "complete"
         )
@@ -446,14 +403,12 @@ def process_job(
         return False, f"WebDriver: {e.__class__.__name__}", ""
 
     _wait_body(driver)
-    # Fast scroll to bottom - jump directly to bottom for lazy-loaded comments
     try:
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(0.1)
     except Exception:
         pass
 
-    # Detect platform
     html_text = ""
     try:
         html_text = driver.page_source or ""
@@ -472,7 +427,6 @@ def process_job(
         "captcha": "Captcha present",
     }
 
-    # Tìm field
     textarea_selectors = [
         "textarea#comment", "textarea[name='comment']", "form#commentform textarea",
         "textarea.comment-form-textarea", "form.comment-form textarea", "textarea"
@@ -486,9 +440,15 @@ def process_job(
         "form#commentform input[type='submit']"
     ]
 
-
+    ta = None
+    ta_ifr = None
+    
+    if selectors:
+        ta, ta_ifr = _find_with_selector(driver, selectors.get("ta_sel"), selectors.get("ta_iframe"))
+    
     if not ta:
         ta, ta_ifr = _find_any_frame(driver, textarea_selectors, timeout=FIND_TIMEOUT)
+    
     if not ta:
         toggled = _try_open_comment_form(driver)
         _progressive_scroll(driver, steps=3, pause=0.4)
@@ -498,6 +458,7 @@ def process_job(
             if candidate:
                 ta = candidate
                 ta_ifr = None
+    
     if not ta:
         if login_hint:
             return False, "Login required", ""
@@ -505,16 +466,12 @@ def process_job(
             return False, platform_reasons.get(platform, "Comment box not found"), ""
         return False, "Comment box not found", ""
 
-    # Switch frame nếu textarea nằm trong iframe
     if not _switch_to_frame(driver, ta_ifr):
         return False, "Cannot enter textarea iframe", ""
 
-    # Điền nội dung
     text_to_send = _build_comment_text(content, anchor, website)
     _set_val(driver, ta, text_to_send)
 
-    # Điền các field tùy chọn
-    # Name
     nm = None
     if selectors and selectors.get("name_sel"):
         try:
@@ -531,7 +488,6 @@ def process_job(
     if nm:
         _set_val(driver, nm, name)
 
-    # Email
     em = None
     if selectors and selectors.get("email_sel"):
         try:
@@ -548,7 +504,6 @@ def process_job(
     if em and email:
         _set_val(driver, em, email)
 
-    # Website
     urlf = None
     for s in url_selectors:
         try:
@@ -559,7 +514,6 @@ def process_job(
     if urlf and website:
         _set_val(driver, urlf, website)
 
-    # Submit
     driver.switch_to.default_content()
     btn = None
     btn_ifr = None
@@ -575,7 +529,6 @@ def process_job(
             return False, why, ""
         time.sleep(AFTER_SUBMIT_PAUSE)
     else:
-        # Không thấy nút submit, thử submit form bao quanh textarea
         try:
             if not _switch_to_frame(driver, ta_ifr):
                 return False, "Cannot enter textarea iframe", ""
@@ -588,7 +541,6 @@ def process_job(
         except Exception:
             return False, "No submit button/form", ""
 
-    # Kiểm tra dấu hiệu thành công
     driver.switch_to.default_content()
     try:
         html_after = (driver.page_source or "").lower()
@@ -601,7 +553,6 @@ def process_job(
         "thank you for your comment", "comment was posted", "held for moderation"
     ]
     if any(h in html_after for h in success_hints):
-        # cố gắng lấy permalink comment (best-effort)
         link = ""
         try:
             anchors = driver.find_elements(By.CSS_SELECTOR, "a.comment-permalink, a[rel='bookmark'], a.permalink")
@@ -611,7 +562,6 @@ def process_job(
             pass
         return True, "Submitted (maybe pending moderation)", link
 
-    # Nhiều site WP sẽ reload và chưa render thông báo → vẫn coi là submitted
     return True, "Submitted", ""
 
 
@@ -625,9 +575,6 @@ def post_comment(
     anchor: str = "",
     website: str = "",
 ) -> Tuple[bool, str]:
-    """
-    Giữ API cũ cho pipeline legacy: trả (ok, reason).
-    """
     job = {
         "url": url,
         "anchor": anchor,
