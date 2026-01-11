@@ -4,14 +4,14 @@ After=network-online.target redis-server.service
 
 [Service]
 Type=simple
-WorkingDirectory=/home/ubuntu/blog-comment-tool
-EnvironmentFile=/home/ubuntu/blog-comment-tool/.env
+WorkingDirectory=/root/blogcomment
+EnvironmentFile=/root/blogcomment/.env
 Environment="CHROME_BIN=/usr/bin/google-chrome"
 Environment="USE_UC=false"
 # Suggested:
 #   CELERY_CONCURRENCY=3
 #   CELERY_QUEUES=camp_a,camp_b
-ExecStart=/usr/bin/env bash /home/ubuntu/blog-comment-tool/scripts/run_worker.sh
+ExecStart=/usr/bin/env bash /root/blogcomment/scripts/run_worker.sh
 Restart=on-failure
 RestartSec=5
 
