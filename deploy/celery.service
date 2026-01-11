@@ -6,6 +6,8 @@ After=network-online.target redis-server.service
 Type=simple
 WorkingDirectory=/home/ubuntu/blog-comment-tool
 EnvironmentFile=/home/ubuntu/blog-comment-tool/.env
+Environment="CHROME_BIN=/usr/bin/google-chrome"
+Environment="USE_UC=false"
 # Suggested:
 #   CELERY_CONCURRENCY=3
 #   CELERY_QUEUES=camp_a,camp_b
