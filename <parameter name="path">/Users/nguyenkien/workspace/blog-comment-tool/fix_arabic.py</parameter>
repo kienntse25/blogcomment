@@ -1,0 +1,18 @@
+<parameter name="content">#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+with open('src/commenter.py', 'r', encoding='utf-8') as f:
+    content = f.read()
+
+# Add Arabic keywords step by step using simple replacements
+if '"تعليق"' in content and '"التعليقات"' not in content:
+    content = content.replace('"تعليق"', '"تعليق", "التعليقات"')
+if '"التعليقات"' in content and '"أضف تعليق"' not in content:
+    content = content.replace('"التعليقات"', '"التعليقات", "أضف تعليق"')
+if '"أضف تعليق"' in content and '"أضف تعليقًا"' not in content:
+    content = content.replace('"أضف تعليق"', '"أضف تعليق", "أضف تعليقًا"')
+if '"أضف تعليقًا"' in content and '"اترك تعليق"' not in content:
+    content = content.replace('"أضف تعليقًا"', '"أضف تعليقًا", "اترك تعليق"')
+if '"اترك تعليق"' in content and '"اترك تعليقًا"' not in content:
+    content = content.replace('"اترك تعليق"', '"اترك تعليق", "اترك تعليقًا"')
+if '"اترك تعليقًا"' in content and '"رد"' not in content:
+    content = content.replace('"اترك تعليقًا"', '"اترك تعليقًا", "رد"')

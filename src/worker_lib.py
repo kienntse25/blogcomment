@@ -528,8 +528,7 @@ def run_one_link(job: dict) -> dict:
             "attempts": 0,
         }
 
-    # Optional guardrails: allowlist + robots.txt (for controlled/authorized environments).
-    if ALLOWED_DOMAINS_FILE and not is_url_allowed(url):
+
         return {
             "url": url,
             "status": "FAILED",
@@ -571,11 +570,13 @@ def run_one_link(job: dict) -> dict:
     for attempt in range(1, max_attempts + 1):
         attempts = attempt
         driver = None
+        log.info("[DEBUG] === ATTEMPT %d/%d for %s ===", attempt, max_attempts, url)
         try:
             # Nếu retry, thử proxy khác (hoặc no-proxy) để tăng tỷ lệ thành công.
             if attempt > 1:
                 proxy = _pick_proxy_excluding(proxy)
 
+            log.info("[DEBUG] Acquiring driver (prefer_uc=%s, proxy=%s)", prefer_uc, proxy)
             driver, driver_provider, last_driver_err = _acquire_driver(
                 prefer_uc=prefer_uc,
                 proxy=proxy,
@@ -591,7 +592,14 @@ def run_one_link(job: dict) -> dict:
                 continue
             last_driver_provider = driver_provider
 
+            print(f"[DEBUG] Calling commenter.process_job for {url}")
+            print(f"[DEBUG] Driver type: {type(driver)}")
+            print(f"[DEBUG] Job: {job}")
+            
             ok, rsn, cm_link = commenter.process_job(driver, job)
+            
+            print(f"[DEBUG] process_job returned: ok={ok}, reason={rsn}")
+            
             language = commenter.detect_language(driver) or "unknown"
             status = "OK" if ok else "FAILED"
             last_reason = rsn
