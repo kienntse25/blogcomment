@@ -816,6 +816,18 @@ def process_job(
                 if ta:
                     break
                 time.sleep(0.2)
+        # For lazy-loaded sites, scroll to bottom BEFORE trying to find textarea
+        # This ensures comment form is loaded before searching
+        try:
+            h = driver.execute_script(
+                "return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);"
+            )
+            if h:
+                driver.execute_script("window.scrollTo(0, arguments[0]);", h)
+                time.sleep(0.5)  # Wait for lazy content to load
+        except Exception:
+            pass
+        
         toggled = _try_open_comment_form(driver)
         _progressive_scroll(driver, steps=4, pause=0.4)
         ta, ta_ifr = _find_any_frame(driver, textarea_selectors, timeout=FIND_TIMEOUT)
