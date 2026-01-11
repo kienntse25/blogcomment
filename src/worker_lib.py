@@ -528,8 +528,7 @@ def run_one_link(job: dict) -> dict:
             "attempts": 0,
         }
 
-    # Optional guardrails: allowlist + robots.txt (for controlled/authorized environments).
-    if ALLOWED_DOMAINS_FILE and not is_url_allowed(url):
+
         return {
             "url": url,
             "status": "FAILED",
