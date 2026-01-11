@@ -64,8 +64,19 @@ class BrowserInstance:
     
     def reset(self):
         """Reset browser state for next task."""
+        # Delete cookies
         try:
             self.driver.delete_all_cookies()
+        except Exception:
+            pass
+        # Navigate to blank page to ensure clean state for next task
+        try:
+            self.driver.get("about:blank")
+        except Exception:
+            pass
+        # Clear localStorage and sessionStorage
+        try:
+            self.driver.execute_script("window.localStorage.clear(); window.sessionStorage.clear();")
         except Exception:
             pass
         self.use_count += 1
