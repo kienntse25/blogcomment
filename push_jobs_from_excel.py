@@ -38,10 +38,19 @@ OUT_EXTRA_COLUMNS = [
 ]
 
 # Đọc Excel (đảm bảo tồn tại)
-def _read_df(path):
+def _read_df(path, sheet_name=None):
     if not os.path.exists(path):
         raise FileNotFoundError(f"Không thấy file: {path}")
-    return pd.read_excel(path, engine="openpyxl").fillna("")
+    if sheet_name:
+        return pd.read_excel(path, engine="openpyxl", sheet_name=sheet_name).fillna("")
+    # Đọc tất cả sheets và gộp lại
+    all_sheets = pd.read_excel(path, engine="openpyxl", sheet_name=None)
+    if isinstance(all_sheets, dict):
+        dfs = list(all_sheets.values())
+        if not dfs:
+            raise ValueError(f"File {path} không có sheet nào")
+        return pd.concat(dfs, ignore_index=True).fillna("")
+    return all_sheets.fillna("")
 
 def _default_input_path() -> str:
     env_path = (os.getenv("INPUT_XLSX") or "").strip()
