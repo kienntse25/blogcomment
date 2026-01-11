@@ -486,10 +486,7 @@ def process_job(
         "form#commentform input[type='submit']"
     ]
 
-    ta = None
-    ta_ifr = None
-    if selectors:
-        ta, ta_ifr = _find_with_selector(driver, selectors.get("ta_sel"), selectors.get("ta_iframe"))
+
     if not ta:
         ta, ta_ifr = _find_any_frame(driver, textarea_selectors, timeout=FIND_TIMEOUT)
     if not ta:
