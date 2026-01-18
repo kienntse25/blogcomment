@@ -1,0 +1,88 @@
+<parameter name="content">#!/usr/bin/env python3
+import os
+import time
+os.environ["PAGE_LOAD_STRATEGY"] = "eager"
+os.environ["PROXY_URL"] = ""
+
+from src.utils.driver import build_driver
+from selenium.webdriver.common.by import By
+
+url = "https://cmscy.com.cy/testimonial/janet-yianni/"
+
+print(f"=== Checking: {url} ===\n")
+
+driver = build_driver(headless=False)  # Visible để debug
+try:
+    driver.set_page_load_timeout(60)
+    driver.get(url)
+    time.sleep(5)
+    
+    html = driver.page_source.lower()
+    
+    # Check for comment-related elements
+    checks = [
+        ("#commentform", "#commentform"),
+        ("#respond", "#respond"),
+        ("textarea#comment", "textarea#comment"),
+        ("textarea[name=comment]", "textarea[name=comment]"),
+        (".comment-form", ".comment-form"),
+        (".comments-area", ".comments-area"),
+        ("Jetpack", "Jetpack Comments"),
+        ("Disqus", "Disqus"),
+        ("wpdiscuz", "wpDiscuz"),
+    ]
+    
+    print("=== Page Source Checks ===")
+    for selector, label in checks:
+        if selector in html:
+            print(f"  ✅ {label}: FOUND")
+        else:
+            print(f"  ❌ {label}: not found")
+    
+    # List all textareas
+    textareas = driver.find_elements(By.TAG_NAME, "textarea")
+    print(f"\n=== Textareas ({len(textareas)}) ===")
+    for i, ta in enumerate(textareas):
+        try:
+            name = ta.get_attribute('name') or ''
+            id_val = ta.get_attribute('id') or ''
+            classes = ta.get_attribute('class') or ''
+            displayed = ta.is_displayed()
+            print(f"  [{i}] name={name[:40]}, id={id_val[:40]}")
+            print(f"      class={classes[:60]}, displayed={displayed}")
+        except Exception as e:
+            print(f"  [{i}] Error: {e}")
+    
+    # List all forms
+    forms = driver.find_elements(By.TAG_NAME, "form")
+    print(f"\n=== Forms ({len(forms)}) ===")
+    for i, f in enumerate(forms):
+        try:
+            id_val = f.get_attribute('id') or ''
+            classes = f.get_attribute('class') or ''
+            action = f.get_attribute('action') or ''
+            print(f"  [{i}] id={id_val[:40]}, class={classes[:40]}")
+            print(f"      action={action[:80]}")
+        except:
+            print(f"  [{i}] Error")
+            
+    # Check for any element with "comment" related
+    print("\n=== Elements with 'comment' in class/id ===")
+    elements = driver.find_elements(By.CSS_SELECTOR, "[class*='comment'], [id*='comment']")
+    print(f"Found {len(elements)} elements")
+    for i, el in enumerate(elements[:10]):
+        try:
+            tag = el.tag_name
+            id_val = el.get_attribute('id') or ''
+            classes = el.get_attribute('class') or ''
+            text = (el.text or "")[:50].replace("\n", " ")
+            print(f"  [{i}] <{tag}> id={id_val[:30]}, class={classes[:30]}")
+            print(f"      text={text}")
+        except:
+            pass
+            
+finally:
+    driver.quit()
+
+print("\n=== Done ===")
+</parameter>
