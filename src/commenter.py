@@ -21,6 +21,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 from .config import FIND_TIMEOUT, AFTER_SUBMIT_PAUSE, PAGE_LOAD_TIMEOUT, LANG_DETECT_MIN_CHARS
+from .form_selectors import COMMENT_TEXTAREAS, NAME_INPUTS, EMAIL_INPUTS, SUBMIT_BUTTONS
 
 DetectorFactory.seed = 0
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -468,30 +469,17 @@ def process_job(
         "captcha": "Captcha present",
     }
 
-    # Tìm field
-    textarea_selectors = [
-        "textarea#comment", "textarea[name='comment']", "form#commentform textarea",
-        "textarea.comment-form-textarea", "form.comment-form textarea", "textarea"
-    ]
-    name_selectors  = ["input#author", "input[name='author']", "input[name='name']", "input[name='author-name']"]
-    email_selectors = ["input#email",  "input[name='email']"]
-    url_selectors   = ["input#url",    "input[name='url']", "input[name='website']"]
-    submit_selectors = [
-        "input[type='submit']", "button[type='submit']",
-        "input.submit", "button.submit", "input#submit", "button#submit",
-        "form#commentform input[type='submit']"
-    ]
-
+    # Tìm field - sử dụng comprehensive selectors từ form_selectors.py
     ta = None
     ta_ifr = None
     if selectors:
         ta, ta_ifr = _find_with_selector(driver, selectors.get("ta_sel"), selectors.get("ta_iframe"))
     if not ta:
-        ta, ta_ifr = _find_any_frame(driver, textarea_selectors, timeout=FIND_TIMEOUT)
+        ta, ta_ifr = _find_any_frame(driver, COMMENT_TEXTAREAS, timeout=FIND_TIMEOUT)
     if not ta:
         toggled = _try_open_comment_form(driver)
         _progressive_scroll(driver, steps=3, pause=0.4)
-        ta, ta_ifr = _find_any_frame(driver, textarea_selectors, timeout=FIND_TIMEOUT)
+        ta, ta_ifr = _find_any_frame(driver, COMMENT_TEXTAREAS, timeout=FIND_TIMEOUT)
         if not ta:
             candidate = _reveal_hidden_textarea(driver)
             if candidate:
@@ -513,7 +501,7 @@ def process_job(
     _set_val(driver, ta, text_to_send)
 
     # Điền các field tùy chọn
-    # Name
+    # Name - sử dụng comprehensive selectors từ form_selectors.py
     nm = None
     if selectors and selectors.get("name_sel"):
         try:
@@ -521,7 +509,7 @@ def process_job(
         except Exception:
             nm = None
     if not nm:
-        for s in name_selectors:
+        for s in NAME_INPUTS:
             try:
                 nm = driver.find_element(By.CSS_SELECTOR, s)
                 break
@@ -530,7 +518,7 @@ def process_job(
     if nm:
         _set_val(driver, nm, name)
 
-    # Email
+    # Email - sử dụng comprehensive selectors từ form_selectors.py
     em = None
     if selectors and selectors.get("email_sel"):
         try:
@@ -538,7 +526,7 @@ def process_job(
         except Exception:
             em = None
     if not em:
-        for s in email_selectors:
+        for s in EMAIL_INPUTS:
             try:
                 em = driver.find_element(By.CSS_SELECTOR, s)
                 break
@@ -547,7 +535,8 @@ def process_job(
     if em and email:
         _set_val(driver, em, email)
 
-    # Website
+    # Website URL - comprehensive selectors
+    url_selectors = ["input#url", "input[name='url']", "input[name='website']", "input[placeholder*='Website' i]", "input[placeholder*='URL' i]"]
     urlf = None
     for s in url_selectors:
         try:
@@ -558,14 +547,14 @@ def process_job(
     if urlf and website:
         _set_val(driver, urlf, website)
 
-    # Submit
+    # Submit button - sử dụng comprehensive selectors từ form_selectors.py
     driver.switch_to.default_content()
     btn = None
     btn_ifr = None
     if selectors:
         btn, btn_ifr = _find_with_selector(driver, selectors.get("btn_sel"), selectors.get("btn_iframe"))
     if not btn:
-        btn, btn_ifr = _find_any_frame(driver, submit_selectors, timeout=FIND_TIMEOUT)
+        btn, btn_ifr = _find_any_frame(driver, SUBMIT_BUTTONS, timeout=FIND_TIMEOUT)
     if btn:
         if not _switch_to_frame(driver, btn_ifr):
             return False, "Cannot enter submit iframe", ""
