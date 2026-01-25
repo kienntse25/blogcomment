@@ -142,6 +142,10 @@ case "${cmd}" in
     if [[ -n "${queue}" ]]; then
       args+=(--queue "${queue}")
     fi
+    if [[ -n "${timeout}" ]]; then
+      # Also enforce per-task timeout in the pipeline so one stuck URL doesn't block the whole run.
+      args+=(--task-timeout "${timeout}")
+    fi
     if [[ -n "${flush_every}" ]]; then
       args+=(--flush-every "${flush_every}")
     fi

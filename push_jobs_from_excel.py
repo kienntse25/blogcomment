@@ -442,7 +442,7 @@ def main():
                 ar = run_comment.apply_async(args=[{k: v for k, v in j.items() if k != "__row"}], queue=args.queue, routing_key=args.queue)
             else:
                 ar = run_comment.delay({k: v for k, v in j.items() if k != "__row"})
-            tasks.append((j, ar))
+            tasks.append((j, ar, time.time()))
             logging.info(f"Đã gửi task cho URL: {j['url']} (queue={args.queue or 'default'})")
         except Exception as e:
             logging.error(f"Gửi task lỗi {j['url']}: {e}")
@@ -455,7 +455,7 @@ def main():
     poll_interval = 0.5
 
     # Chờ theo kiểu "as completed": tránh bị kẹt ở 1 task chậm/treo, và ghi output dần theo tiến độ.
-    pending = [(j, ar) for (j, ar) in tasks]
+    pending = [(j, ar, sent_at) for (j, ar, sent_at) in tasks]
     t_start = time.time()
     last_heartbeat = t_start
 
@@ -463,7 +463,43 @@ def main():
         progressed = False
         i = len(pending) - 1
         while i >= 0:
-            j, ar = pending[i]
+            j, ar, sent_at = pending[i]
+            # Hard per-task timeout: prevents the whole run from "stopping" because a task is stuck forever.
+            if args.task_timeout and args.task_timeout > 0 and not ar.ready():
+                age = time.time() - sent_at
+                if age >= args.task_timeout:
+                    row_i = int(j.get("__row", -1))
+                    out = {
+                        "url": j.get("url", ""),
+                        "status": "FAILED",
+                        "reason": f"No result/timeout after {int(age)}s",
+                        "comment_link": "",
+                        "duration_sec": 0.0,
+                        "language": "unknown",
+                        "attempts": "",
+                    }
+                    if row_i >= 0:
+                        out_merged.at[row_i, OUT_STATUS_COL] = "FAILED"
+                        out_merged.at[row_i, OUT_REASON_COL] = out["reason"]
+                        out_merged.at[row_i, OUT_COMMENT_LINK_COL] = ""
+                        out_merged.at[row_i, OUT_DURATION_COL] = out.get("duration_sec", "")
+                        out_merged.at[row_i, OUT_LANGUAGE_COL] = out.get("language", "")
+                        out_merged.at[row_i, OUT_ATTEMPTS_COL] = out.get("attempts", "")
+                        out_merged.at[row_i, OUT_UPDATED_AT_COL] = time.strftime("%Y-%m-%d %H:%M:%S")
+                    try:
+                        # Best-effort: ask Celery to drop it (may already be running).
+                        ar.revoke(terminate=False)
+                    except Exception:
+                        pass
+                    pending[i] = pending[-1]
+                    pending.pop()
+                    progressed = True
+                    finished += 1
+                    if finished % flush_every == 0:
+                        out_merged.to_excel(args.output, index=False)
+                        logging.info(f"Đã ghi tạm {args.output} (done={finished}).")
+                    i -= 1
+                    continue
             if ar.ready():
                 try:
                     out = ar.get(timeout=1)

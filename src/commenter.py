@@ -1,7 +1,6 @@
 # src/commenter.py
 from __future__ import annotations
 import time
-import socket
 import html
 import re
 from typing import Dict, Any, Tuple, Optional
@@ -20,7 +19,14 @@ from selenium.common.exceptions import (
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-from .config import FIND_TIMEOUT, AFTER_SUBMIT_PAUSE, PAGE_LOAD_TIMEOUT, LANG_DETECT_MIN_CHARS
+from .config import (
+    FIND_TIMEOUT,
+    AFTER_SUBMIT_PAUSE,
+    PAGE_LOAD_TIMEOUT,
+    LANG_DETECT_MIN_CHARS,
+    COMMENT_FORM_WAIT_SEC,
+    FAST_SCROLL_TO_BOTTOM,
+)
 from .form_selectors import COMMENT_TEXTAREAS, NAME_INPUTS, EMAIL_INPUTS, SUBMIT_BUTTONS
 
 DetectorFactory.seed = 0
@@ -28,16 +34,38 @@ _TAG_RE = re.compile(r"<[^>]+>")
 
 # ---------------- Helpers ----------------
 
-def _dns_ok(u: str, timeout=5) -> Tuple[bool, str]:
+def _is_privacy_or_block_page(driver) -> Optional[str]:
+    """
+    Fast-fail for obvious browser interstitials that will never contain a comment form.
+    Keeps worker from wasting COMMENT_FORM_WAIT_SEC on pages like:
+      - "Privacy error" / cert errors
+      - chrome-error://chromewebdata
+    """
     try:
-        host = urlparse(u).hostname
-        if not host:
-            return False, "Invalid URL"
-        socket.setdefaulttimeout(timeout)
-        socket.getaddrinfo(host, None)
-        return True, ""
-    except Exception as e:
-        return False, f"DNS error: {e}"
+        title = (driver.title or "").strip().lower()
+    except Exception:
+        title = ""
+    try:
+        cur = (driver.current_url or "").strip().lower()
+    except Exception:
+        cur = ""
+
+    if cur.startswith("chrome-error://") or "chromewebdata" in cur:
+        return "TLS/privacy error"
+    if any(
+        tok in title
+        for tok in (
+            "privacy error",
+            "your connection is not private",
+            "net::err_cert",
+            "this site can’t be reached",
+            "this site can't be reached",
+        )
+    ):
+        return "TLS/privacy error"
+    if any(tok in title for tok in ("access denied", "attention required", "just a moment")):
+        return "Blocked/interstitial"
+    return None
 
 def _wait_body(driver):
     try:
@@ -150,10 +178,22 @@ def _qsa_first(driver, selectors) -> Optional[object]:
     # JS tìm phần tử đầu tiên hiển thị theo danh sách selector
     js = """
     const sels = arguments[0];
+    function isVisible(el) {
+      try {
+        const r = el.getBoundingClientRect();
+        if (!r || r.width < 2 || r.height < 2) return false;
+        const style = window.getComputedStyle(el);
+        if (!style) return false;
+        if (style.display === 'none') return false;
+        if (style.visibility === 'hidden') return false;
+        if (style.opacity === '0') return false;
+        return true;
+      } catch(e) { return false; }
+    }
     for (const s of sels) {
       try {
         const el = document.querySelector(s);
-        if (el && el.offsetParent !== null) return el;
+        if (el && isVisible(el)) return el;
       } catch(e) {}
     }
     return null;
@@ -177,6 +217,67 @@ def _qsa_first(driver, selectors) -> Optional[object]:
         except Exception:
             continue
     return None
+
+def _try_accept_cookies(driver) -> bool:
+    """
+    Best-effort cookie consent clicker (no-op if nothing found).
+    Keeps it short to avoid slowing down runs.
+    """
+    js = r"""
+    const ACCEPT = [
+      "accept", "agree", "ok", "got it", "allow", "consent",
+      "accetta", "accetto", "consenti", "va bene", "ho capito",
+      "aceptar", "acepto",
+      "j'accepte", "accepter",
+      "zulassen", "akzeptieren",
+      "aceitar",
+      "รับ", "同意", "允许"
+    ];
+    function norm(s){ return (s||"").trim().toLowerCase(); }
+    function isVisible(el){
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      if (!r || r.width < 2 || r.height < 2) return false;
+      const style = window.getComputedStyle(el);
+      if (!style) return false;
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+      return true;
+    }
+    const candidates = [];
+    document.querySelectorAll("button, a, input[type='button'], input[type='submit']").forEach(el => candidates.push(el));
+    for (const el of candidates) {
+      if (!isVisible(el)) continue;
+      const txt = norm(el.innerText || el.textContent || el.value || "");
+      if (!txt) continue;
+      if (!ACCEPT.some(t => txt === t || txt.includes(t))) continue;
+      const ctx = norm((el.id||"") + " " + (el.className||"") + " " + (el.getAttribute("aria-label")||""));
+      if (!(ctx.includes("cookie") || ctx.includes("consent") || ctx.includes("gdpr") || ctx.includes("privacy") || ctx.includes("cmp"))) {
+        // still allow, but lower priority
+      }
+      try { el.click(); return true; } catch(e) {}
+      try { el.dispatchEvent(new MouseEvent("click",{bubbles:true,cancelable:true})); return true; } catch(e) {}
+    }
+    return false;
+    """
+    try:
+        return bool(driver.execute_script(js))
+    except InvalidSessionIdException:
+        raise
+    except Exception:
+        return False
+
+def _jump_to_comment_anchors(driver) -> None:
+    """
+    Some WP themes lazy-render the comment form only when scrolled near #comments/#respond.
+    This function tries fast hash jumps to trigger that logic.
+    """
+    for h in ("#comments", "#respond", "#commentform"):
+        try:
+            driver.execute_script("location.hash = arguments[0];", h)
+            driver.execute_script("window.dispatchEvent(new Event('hashchange'));")
+            time.sleep(0.05)
+        except Exception:
+            continue
 
 def _find_any_frame(driver, selectors, timeout=FIND_TIMEOUT) -> Tuple[Optional[object], Optional[int]]:
     """
@@ -214,6 +315,185 @@ def _find_any_frame(driver, selectors, timeout=FIND_TIMEOUT) -> Tuple[Optional[o
     except Exception:
         pass
     return None, None
+
+def _strict_comment_selectors() -> list[str]:
+    # Avoid ultra-generic selectors that cause false positives (contact forms, etc.).
+    bad = {"textarea", "button"}
+    out: list[str] = []
+    for s in COMMENT_TEXTAREAS:
+        if s in bad:
+            continue
+        # Contact-form-7 textarea is not a website comment box.
+        if "wpcf7" in s:
+            continue
+        out.append(s)
+    return out or list(COMMENT_TEXTAREAS)
+
+def _strict_submit_selectors() -> list[str]:
+    # Avoid clicking random buttons (cookie banners, newsletter, etc.).
+    out: list[str] = []
+    for s in SUBMIT_BUTTONS:
+        if s.strip().lower() == "button":
+            continue
+        out.append(s)
+    return out or list(SUBMIT_BUTTONS)
+
+def _best_comment_textarea_in_context(driver) -> Optional[object]:
+    """
+    Heuristic finder to avoid:
+      - picking contact/newsletter textareas
+      - missing comment textareas that don't match strict CSS selectors
+    Returns a visible textarea WebElement or None.
+    """
+    js = r"""
+    const COMMENT_TOKENS = [
+      "comment", "reply", "leave a reply", "leave a comment", "add a comment",
+      "bình luận", "nhận xét", "góp ý",
+      "коммент", "комментар", "ответ",
+      "تعليق", "coment", "comentar", "comentario", "yorum"
+    ];
+    const NEGATIVE_TOKENS = [
+      "contact", "message", "newsletter", "subscribe", "search", "login", "sign in"
+    ];
+    function textOf(el) {
+      const a = [
+        el.getAttribute("id") || "",
+        el.getAttribute("name") || "",
+        el.getAttribute("aria-label") || "",
+        el.getAttribute("placeholder") || "",
+        el.className || ""
+      ].join(" ").toLowerCase();
+      return a;
+    }
+    function hasToken(hay, tokens) { return tokens.some(t => hay.includes(t)); }
+    function isVisible(el) {
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      if (!r || r.width < 2 || r.height < 2) return false;
+      const style = window.getComputedStyle(el);
+      if (!style) return false;
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+      return true;
+    }
+    function scoreTextarea(ta) {
+      let score = 0;
+      const t = textOf(ta);
+      if (hasToken(t, COMMENT_TOKENS)) score += 6;
+      if (ta.closest("#respond, #commentform, .comment-respond, .comments-area, #comments, .comment-form, section#comments")) score += 4;
+      const f = ta.form || ta.closest("form");
+      if (f) {
+        const action = (f.getAttribute("action") || "").toLowerCase();
+        if (action.includes("wp-comments-post") || action.includes("comment")) score += 4;
+        const ftxt = (f.className || "").toLowerCase() + " " + (f.id || "").toLowerCase();
+        if (hasToken(ftxt, COMMENT_TOKENS)) score += 2;
+        if (hasToken(ftxt, NEGATIVE_TOKENS)) score -= 6;
+      }
+      const anc = ta.closest("form, section, div");
+      if (anc) {
+        const a = (anc.className || "").toLowerCase() + " " + (anc.id || "").toLowerCase();
+        if (hasToken(a, COMMENT_TOKENS)) score += 2;
+        if (hasToken(a, NEGATIVE_TOKENS)) score -= 4;
+      }
+      // Downscore obvious contact-form-7 fields
+      if (ta.closest(".wpcf7, form.wpcf7-form")) score -= 8;
+      return score;
+    }
+
+    const textareas = Array.from(document.querySelectorAll("textarea"));
+    let best = null;
+    let bestScore = -9999;
+    for (const ta of textareas) {
+      if (!isVisible(ta)) continue;
+      const sc = scoreTextarea(ta);
+      if (sc > bestScore) { bestScore = sc; best = ta; }
+    }
+    if (best && bestScore >= 4) return best;
+    return null;
+    """
+    try:
+        el = driver.execute_script(js)
+        return el if el else None
+    except InvalidSessionIdException:
+        raise
+    except Exception:
+        return None
+
+def _find_best_comment_textarea(driver, timeout_sec: float) -> Tuple[Optional[object], Optional[int]]:
+    """
+    Try strict selectors first, then heuristic scoring (main doc + iframes).
+    Returns (textarea, iframe_index)
+    """
+    strict = _strict_comment_selectors()
+    end = time.time() + max(0.0, float(timeout_sec))
+    while True:
+        driver.switch_to.default_content()
+        ta = _qsa_first(driver, strict)
+        if not ta:
+            ta = _best_comment_textarea_in_context(driver)
+        if ta:
+            return ta, None
+        iframes = []
+        try:
+            iframes = driver.find_elements(By.TAG_NAME, "iframe")
+        except Exception:
+            iframes = []
+        for idx, fr in enumerate(iframes):
+            try:
+                driver.switch_to.default_content()
+                driver.switch_to.frame(fr)
+                ta2 = _qsa_first(driver, strict)
+                if not ta2:
+                    ta2 = _best_comment_textarea_in_context(driver)
+                if ta2:
+                    return ta2, idx
+            except InvalidSessionIdException:
+                raise
+            except Exception:
+                continue
+        if time.time() >= end:
+            break
+        time.sleep(0.25)
+    try:
+        driver.switch_to.default_content()
+    except Exception:
+        pass
+    return None, None
+
+def _closest_form(driver, el) -> Optional[object]:
+    try:
+        form = driver.execute_script("return arguments[0].form || arguments[0].closest('form');", el)
+        return form if form else None
+    except InvalidSessionIdException:
+        raise
+    except Exception:
+        return None
+
+def _find_in_form(form_el, selectors: list[str]):
+    for s in selectors:
+        try:
+            el = form_el.find_element(By.CSS_SELECTOR, s)
+            if el.is_displayed():
+                return el
+        except Exception:
+            continue
+    return None
+
+def _find_submit_in_form(driver, form_el) -> Optional[object]:
+    # Prefer submit button inside the same form as textarea.
+    try:
+        el = driver.execute_script(
+            """
+            const f = arguments[0];
+            if (!f) return null;
+            return f.querySelector("input[type='submit'], button[type='submit'], button[name='submit'], input[name='submit']");
+            """,
+            form_el,
+        )
+        return el if el else None
+    except InvalidSessionIdException:
+        raise
+    except Exception:
+        return None
 
 
 def _coerce_iframe_index(value) -> Optional[int]:
@@ -351,6 +631,15 @@ def detect_language(driver, fallback: str = "unknown") -> str:
 
 def _detect_platform(html_text: str) -> str:
     t = (html_text or "").lower()
+    
+    # IMPORTANT: Check WordPress FIRST to avoid false positives from comment spam
+    # WordPress indicators are more specific and should be checked first
+    if "comment-form" in t or 'id="commentform"' in t or 'name="comment"' in t:
+        return "wordpress"
+    if "wpdiscuz" in t:
+        return "wpdiscuz"
+    
+    # Check Disqus (external comment system)
     if any(
         token in t
         for token in (
@@ -361,16 +650,28 @@ def _detect_platform(html_text: str) -> str:
         )
     ):
         return "disqus"
-    if "blogger.com" in t or 'name="blogger' in t or "g:plusone" in t:
+    
+    # Blogger detection - use regex to avoid matching blog URLs in spam comments
+    # Only match if it's actual Blogger platform markup
+    # Blogger detection should be strict; many pages contain blogspot.com links in content.
+    if any(
+        tok in t
+        for tok in (
+            "www.blogger.com/comment.g",
+            "blogger-iframe-colorize",
+            "data-blogger",
+            "blogger-comment",
+        )
+    ):
         return "blogger"
+    
+    # Check other platforms
     if "commento" in t or "commento.io" in t:
         return "commento"
     if "hyvor" in t or "hyvor-talk" in t or "talk.hyvor.com" in t:
         return "hyvor"
     if "facebook.com/plugins/comments" in t or "fb-comments" in t:
         return "fbcomments"
-    if "wpdiscuz" in t:
-        return "wpdiscuz"
     if "g-recaptcha" in t or "hcaptcha" in t:
         return "captcha"
     if "you must be logged in to post a comment" in t:
@@ -378,8 +679,6 @@ def _detect_platform(html_text: str) -> str:
     if "must be logged in to comment" in t:
         return "login"
 
-    if "comment-form" in t or 'id="commentform"' in t or 'name="comment"' in t:
-        return "wordpress"
     return "unknown"
 
 def _build_comment_text(base_text: str, anchor: str, website: str) -> str:
@@ -415,16 +714,16 @@ def process_job(
     name = str(job.get("name", "")) or "Guest"
     email = str(job.get("email", "")) or ""
     website = str(job.get("website", "")) or ""
+    attach_anchor = bool(job.get("attach_anchor", True))
     selectors = selectors or job.get("selectors") or None
     if selectors is not None and not isinstance(selectors, dict):
         selectors = None
 
     if not url:
         return False, "Empty URL", ""
-
-    okdns, why = _dns_ok(url)
-    if not okdns:
-        return False, why or "DNS not resolved", ""
+    if not attach_anchor:
+        anchor = ""
+        website = ""
 
     try:
         driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
@@ -443,12 +742,22 @@ def process_job(
         return False, f"WebDriver: {e.__class__.__name__}", ""
 
     _wait_body(driver)
+    # Best-effort: dismiss cookie banners early (can hide comment form).
+    _try_accept_cookies(driver)
+    _jump_to_comment_anchors(driver)
+    interstitial = _is_privacy_or_block_page(driver)
+    if interstitial:
+        return False, interstitial, ""
     # Fast scroll to bottom - jump directly to bottom for lazy-loaded comments
-    try:
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(0.1)
-    except Exception:
-        pass
+    if FAST_SCROLL_TO_BOTTOM:
+        try:
+            driver.execute_script(
+                "window.scrollTo(0, Math.max(document.body.scrollHeight, document.documentElement.scrollHeight));"
+                "window.dispatchEvent(new Event('scroll'));"
+            )
+            time.sleep(0.1)
+        except Exception:
+            pass
 
     # Detect platform
     html_text = ""
@@ -469,17 +778,30 @@ def process_job(
         "captcha": "Captcha present",
     }
 
-    # Tìm field - sử dụng comprehensive selectors từ form_selectors.py
+    # Find comment textarea (2-phase):
+    #  - fast path: strict selectors, short wait
+    #  - slow path: scroll/expand + heuristic scoring, up to COMMENT_FORM_WAIT_SEC
     ta = None
     ta_ifr = None
     if selectors:
         ta, ta_ifr = _find_with_selector(driver, selectors.get("ta_sel"), selectors.get("ta_iframe"))
     if not ta:
-        ta, ta_ifr = _find_any_frame(driver, COMMENT_TEXTAREAS, timeout=FIND_TIMEOUT)
+        ta, ta_ifr = _find_best_comment_textarea(driver, timeout_sec=min(2.0, float(FIND_TIMEOUT)))
     if not ta:
-        toggled = _try_open_comment_form(driver)
-        _progressive_scroll(driver, steps=3, pause=0.4)
-        ta, ta_ifr = _find_any_frame(driver, COMMENT_TEXTAREAS, timeout=FIND_TIMEOUT)
+        # Trigger lazy-load / expand reply areas once, then wait a bit longer.
+        _try_accept_cookies(driver)
+        _try_open_comment_form(driver)
+        _jump_to_comment_anchors(driver)
+        if FAST_SCROLL_TO_BOTTOM:
+            try:
+                driver.execute_script(
+                    "window.scrollTo(0, Math.max(document.body.scrollHeight, document.documentElement.scrollHeight));"
+                    "window.dispatchEvent(new Event('scroll'));"
+                )
+            except Exception:
+                pass
+        _progressive_scroll(driver, steps=3, pause=0.25)
+        ta, ta_ifr = _find_best_comment_textarea(driver, timeout_sec=float(COMMENT_FORM_WAIT_SEC))
         if not ta:
             candidate = _reveal_hidden_textarea(driver)
             if candidate:
@@ -487,7 +809,8 @@ def process_job(
                 ta_ifr = None
     if not ta:
         if login_hint:
-            return False, "Login required", ""
+            # Only return "Login required" if we genuinely can't locate any comment form.
+            return False, "Login required (no comment form)", ""
         if platform in platform_reasons:
             return False, platform_reasons.get(platform, "Comment box not found"), ""
         return False, "Comment box not found", ""
@@ -495,6 +818,8 @@ def process_job(
     # Switch frame nếu textarea nằm trong iframe
     if not _switch_to_frame(driver, ta_ifr):
         return False, "Cannot enter textarea iframe", ""
+
+    form_el = _closest_form(driver, ta)
 
     # Điền nội dung
     text_to_send = _build_comment_text(content, anchor, website)
@@ -508,6 +833,8 @@ def process_job(
             nm = driver.find_element(By.CSS_SELECTOR, selectors["name_sel"])
         except Exception:
             nm = None
+    if not nm and form_el is not None:
+        nm = _find_in_form(form_el, NAME_INPUTS)
     if not nm:
         for s in NAME_INPUTS:
             try:
@@ -525,6 +852,8 @@ def process_job(
             em = driver.find_element(By.CSS_SELECTOR, selectors["email_sel"])
         except Exception:
             em = None
+    if not em and form_el is not None:
+        em = _find_in_form(form_el, EMAIL_INPUTS)
     if not em:
         for s in EMAIL_INPUTS:
             try:
@@ -538,43 +867,54 @@ def process_job(
     # Website URL - comprehensive selectors
     url_selectors = ["input#url", "input[name='url']", "input[name='website']", "input[placeholder*='Website' i]", "input[placeholder*='URL' i]"]
     urlf = None
-    for s in url_selectors:
-        try:
-            urlf = driver.find_element(By.CSS_SELECTOR, s)
-            break
-        except NoSuchElementException:
-            continue
+    if form_el is not None:
+        urlf = _find_in_form(form_el, url_selectors)
+    if not urlf:
+        for s in url_selectors:
+            try:
+                urlf = driver.find_element(By.CSS_SELECTOR, s)
+                break
+            except NoSuchElementException:
+                continue
     if urlf and website:
         _set_val(driver, urlf, website)
 
-    # Submit button - sử dụng comprehensive selectors từ form_selectors.py
-    driver.switch_to.default_content()
+    # Submit: prefer submit inside the same form as textarea (avoid random buttons)
     btn = None
-    btn_ifr = None
-    if selectors:
-        btn, btn_ifr = _find_with_selector(driver, selectors.get("btn_sel"), selectors.get("btn_iframe"))
-    if not btn:
-        btn, btn_ifr = _find_any_frame(driver, SUBMIT_BUTTONS, timeout=FIND_TIMEOUT)
+    if form_el is not None:
+        btn = _find_submit_in_form(driver, form_el)
     if btn:
-        if not _switch_to_frame(driver, btn_ifr):
-            return False, "Cannot enter submit iframe", ""
         ok, why = _safe_click(driver, btn, "submit")
         if not ok:
             return False, why, ""
         time.sleep(AFTER_SUBMIT_PAUSE)
     else:
-        # Không thấy nút submit, thử submit form bao quanh textarea
-        try:
-            if not _switch_to_frame(driver, ta_ifr):
-                return False, "Cannot enter textarea iframe", ""
-            driver.execute_script("""
-                var el = arguments[0];
-                var f = el.form || el.closest('form');
-                if (f) { f.submit(); return true; } else { return false; }
-            """, ta)
+        # Fallback: try strict submit selectors (global) or form.submit()
+        driver.switch_to.default_content()
+        btn2 = None
+        btn2_ifr = None
+        if selectors:
+            btn2, btn2_ifr = _find_with_selector(driver, selectors.get("btn_sel"), selectors.get("btn_iframe"))
+        if not btn2:
+            btn2, btn2_ifr = _find_any_frame(driver, _strict_submit_selectors(), timeout=float(FIND_TIMEOUT))
+        if btn2:
+            if not _switch_to_frame(driver, btn2_ifr):
+                return False, "Cannot enter submit iframe", ""
+            ok, why = _safe_click(driver, btn2, "submit")
+            if not ok:
+                return False, why, ""
             time.sleep(AFTER_SUBMIT_PAUSE)
-        except Exception:
-            return False, "No submit button/form", ""
+        else:
+            try:
+                if not _switch_to_frame(driver, ta_ifr):
+                    return False, "Cannot enter textarea iframe", ""
+                driver.execute_script(
+                    "var el = arguments[0]; var f = el.form || el.closest('form'); if (f) { f.submit(); return true; } return false;",
+                    ta,
+                )
+                time.sleep(AFTER_SUBMIT_PAUSE)
+            except Exception:
+                return False, "No submit button/form", ""
 
     # Kiểm tra dấu hiệu thành công
     driver.switch_to.default_content()
@@ -582,6 +922,22 @@ def process_job(
         html_after = (driver.page_source or "").lower()
     except Exception:
         html_after = ""
+
+    error_hints = [
+        "error:", "there was an error", "could not be posted", "cannot be posted",
+        "duplicate comment", "spam", "forbidden", "access denied",
+        "please fill", "required field", "captcha", "recaptcha", "hcaptcha",
+        "must be logged in",
+    ]
+    if any(h in html_after for h in error_hints):
+        # Some pages include generic "error" text; try to surface a more specific reason.
+        if "captcha" in html_after or "recaptcha" in html_after or "hcaptcha" in html_after:
+            return False, "Captcha present", ""
+        if "must be logged in" in html_after:
+            return False, "Login required", ""
+        if "duplicate comment" in html_after:
+            return False, "Duplicate comment", ""
+        return False, "Submit error", ""
 
     success_hints = [
         "comment submitted", "awaiting moderation", "awaiting approval",
@@ -599,8 +955,14 @@ def process_job(
             pass
         return True, "Submitted (maybe pending moderation)", link
 
-    # Nhiều site WP sẽ reload và chưa render thông báo → vẫn coi là submitted
-    return True, "Submitted", ""
+    # Best-effort: some sites redirect without rendering a success message.
+    try:
+        cur_after = (driver.current_url or "").strip()
+    except Exception:
+        cur_after = ""
+    if cur_after and cur_after != url:
+        return True, "Submitted (unverified)", cur_after
+    return True, "Submitted (unverified)", ""
 
 
 def post_comment(

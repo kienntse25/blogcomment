@@ -1,6 +1,7 @@
 # src/celery_app.py
 import os
 from celery import Celery
+from kombu import Exchange, Queue
 
 # Broker/Backend (đổi qua env trên VPS nếu cần)
 BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
@@ -18,10 +19,17 @@ celery.conf.update(
     timezone="Asia/Ho_Chi_Minh",
     enable_utc=False,
 
-    # Queue mặc định (có thể override theo campaign bằng apply_async(queue=...))
-    task_default_queue="camp_test",
+    # Queue mặc định
+    task_default_queue="camp_a",
 
-    # Serializer: dùng JSON để an toàn hơn (tránh pickle) và cho phép chạy worker không cần C_FORCE_ROOT.
+    # Định nghĩa các queues cho 3 campaigns
+    task_queues=(
+        Queue("camp_a", Exchange("camp_a"), routing_key="camp_a"),
+        Queue("camp_b", Exchange("camp_b"), routing_key="camp_b"),
+        Queue("camp_c", Exchange("camp_c"), routing_key="camp_c"),
+    ),
+
+    # Serializer: dùng JSON để an toàn hơn
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],
