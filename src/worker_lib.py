@@ -6,7 +6,6 @@ import socket
 import logging
 import random
 from contextlib import contextmanager
-import undetected_chromedriver as uc
 from urllib.parse import urlparse
 from selenium.common.exceptions import InvalidSessionIdException
 from urllib3.exceptions import ProtocolError, ReadTimeoutError
@@ -42,6 +41,16 @@ from .utils.allowlist import is_url_allowed
 from .utils.robots import is_allowed as robots_allowed
 
 log = logging.getLogger("worker_lib")
+
+try:
+    import undetected_chromedriver as uc  # type: ignore
+    _HAS_UC = True
+    _UC_IMPORT_ERROR = ""
+except Exception as exc:
+    # Python 3.12+ may not ship distutils, which breaks some uc versions.
+    uc = None  # type: ignore
+    _HAS_UC = False
+    _UC_IMPORT_ERROR = str(exc)
 
 _FILE_PROXY_CACHE: list[str] | None = None
 _FILE_PROXY_MTIME: float | None = None
@@ -188,6 +197,8 @@ def _load_proxies_from_xlsx() -> list[str]:
 
 def _use_uc() -> bool:
     # UC can be unstable on some Chrome builds; keep it opt-in.
+    if not _HAS_UC:
+        return False
     return os.getenv("USE_UC", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -359,6 +370,8 @@ def _make_driver_uc(version_main: int = 0, proxy: str | None = None):
     version_main = 0 → để UC auto chọn.
     Nếu lỗi version mismatch, sẽ fallback sang các version trong RETRY_DRIVER_VERSIONS.
     """
+    if not _HAS_UC or uc is None:
+        raise RuntimeError(f"undetected_chromedriver is not available: {_UC_IMPORT_ERROR}".strip())
     if os.getenv("UC_CLEAR_CACHE", "false").strip().lower() in {"1", "true", "yes", "on"}:
         with _uc_patch_lock():
             _clear_uc_cache()

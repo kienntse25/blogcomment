@@ -54,4 +54,4 @@ fi
 EXTRA_ARGS+=("--prefetch-multiplier=1")
 EXTRA_ARGS+=("--max-tasks-per-child=${CELERY_MAX_TASKS_PER_CHILD:-20}")
 
-exec celery -A src.tasks worker --loglevel="${LOGLEVEL}" "${EXTRA_ARGS[@]}"
+exec celery -A src.celery_app worker --loglevel="${LOGLEVEL}" "${EXTRA_ARGS[@]}"
