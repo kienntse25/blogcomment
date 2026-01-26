@@ -472,7 +472,18 @@ def main():
             # Hard per-task timeout: prevents the whole run from "stopping" because a task is stuck forever.
             if args.task_timeout and args.task_timeout > 0 and not ar.ready():
                 age = time.time() - sent_at
-                if age >= args.task_timeout:
+                # Avoid mass-revokes when the queue is backlogged: allow extra grace time for tasks that
+                # haven't even started yet (state often stays PENDING until completion unless track_started is enabled).
+                queue_grace = float(os.getenv("QUEUE_GRACE_SEC", "90") or "90")
+                try:
+                    state = str(getattr(ar, "state", "") or "").upper()
+                except Exception:
+                    state = ""
+                threshold = float(args.task_timeout)
+                if state in {"PENDING", ""}:
+                    threshold = threshold + max(0.0, queue_grace)
+
+                if age >= threshold:
                     row_i = int(j.get("__row", -1))
                     out = {
                         "url": j.get("url", ""),
@@ -493,7 +504,8 @@ def main():
                         out_merged.at[row_i, OUT_UPDATED_AT_COL] = time.strftime("%Y-%m-%d %H:%M:%S")
                     try:
                         # Best-effort: ask Celery to drop it (may already be running).
-                        ar.revoke(terminate=False)
+                        if os.getenv("REVOKE_ON_TIMEOUT", "true").strip().lower() in {"1", "true", "yes", "on"}:
+                            ar.revoke(terminate=False)
                     except Exception:
                         pass
                     pending[i] = pending[-1]
