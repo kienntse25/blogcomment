@@ -62,6 +62,29 @@ def _is_rate_limit_message(msg: str) -> bool:
     )
     return any(t in m for t in tokens)
 
+def _is_duplicate_message(msg: str) -> bool:
+    m = (msg or "").strip().lower()
+    if not m:
+        return False
+    tokens = (
+        # WordPress default
+        "duplicate comment",
+        "duplicate comment detected",
+        "looks like you've already said that",
+        # ES
+        "comentario duplicado",
+        "ya había sido enviado",
+        "ya habia sido enviado",
+        # FR
+        "commentaire en double",
+        "déjà envoyé",
+        "deja envoye",
+        # DE
+        "doppelter kommentar",
+        "du schreibst die kommentare",
+    )
+    return any(t in m for t in tokens)
+
 def _is_privacy_or_block_page(driver) -> Optional[str]:
     """
     Fast-fail for obvious browser interstitials that will never contain a comment form.
@@ -1352,6 +1375,8 @@ def process_job(
             pass
         return True, "Submitted (maybe pending moderation)", link
 
+    dupe_as_ok = os.getenv("DUPLICATE_AS_OK", "true").strip().lower() in {"1", "true", "yes", "on"}
+
     # Verify actual posted comment (when the page doesn't show a clear success message).
     verified_link = _verify_posted_comment(driver, name=name, comment_text=text_to_send)
     if verified_link:
@@ -1359,6 +1384,8 @@ def process_job(
 
     # WordPress/common failure hints (must be specific; do not match normal form text like "Required fields are marked").
     if "duplicate comment" in html_after:
+        if dupe_as_ok:
+            return True, "Already commented (duplicate)", f"{(cur_after or url).split('#',1)[0]}#comments"
         return False, "Duplicate comment", ""
     if "comments are closed" in html_after:
         return False, "Comments are closed", ""
@@ -1372,6 +1399,10 @@ def process_job(
     # Extract explicit WP error pages/messages (wp_die / ERROR: ...)
     msg = _extract_submit_error_message(full_html)
     if msg:
+        if _is_duplicate_message(msg):
+            if dupe_as_ok:
+                return True, "Already commented (duplicate)", f"{(cur_after or url).split('#',1)[0]}#comments"
+            return False, "Duplicate comment", ""
         if _is_rate_limit_message(msg):
             # Some sites still accept the comment but show a "too quickly" warning.
             verified_http = _verify_posted_comment_http(

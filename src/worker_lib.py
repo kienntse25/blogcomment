@@ -535,6 +535,7 @@ def _should_retry(reason: str) -> bool:
         "login",
         "captcha",
         "already attempted",
+        "duplicate comment",
         "no submit button",
         "tls/privacy error",
         "not found (404)",
