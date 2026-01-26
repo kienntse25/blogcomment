@@ -37,6 +37,11 @@ OUT_EXTRA_COLUMNS = [
     OUT_UPDATED_AT_COL,
 ]
 
+def _cell_str(value) -> str:
+    if value is None:
+        return ""
+    return str(value)
+
 # Đọc Excel (đảm bảo tồn tại)
 def _read_df(path, sheet_name=None):
     if not os.path.exists(path):
@@ -419,9 +424,9 @@ def main():
         out_merged.at[i, OUT_STATUS_COL] = str(res.get("status", "")).strip()
         out_merged.at[i, OUT_REASON_COL] = str(res.get("reason", "")).strip()
         out_merged.at[i, OUT_COMMENT_LINK_COL] = str(res.get("comment_link", "")).strip()
-        out_merged.at[i, OUT_DURATION_COL] = res.get("duration_sec", "")
+        out_merged.at[i, OUT_DURATION_COL] = _cell_str(res.get("duration_sec", ""))
         out_merged.at[i, OUT_LANGUAGE_COL] = str(res.get("language", "")).strip()
-        out_merged.at[i, OUT_ATTEMPTS_COL] = res.get("attempts", "")
+        out_merged.at[i, OUT_ATTEMPTS_COL] = _cell_str(res.get("attempts", ""))
         out_merged.at[i, OUT_UPDATED_AT_COL] = time.strftime("%Y-%m-%d %H:%M:%S")
         out_merged.to_excel(args.output, index=False)
         logging.info(f"Đã ghi {args.output}")
@@ -510,9 +515,9 @@ def main():
                     out_merged.at[row_i, OUT_STATUS_COL] = str((out or {}).get("status", "")).strip()
                     out_merged.at[row_i, OUT_REASON_COL] = str((out or {}).get("reason", "")).strip()
                     out_merged.at[row_i, OUT_COMMENT_LINK_COL] = str((out or {}).get("comment_link", "")).strip()
-                    out_merged.at[row_i, OUT_DURATION_COL] = (out or {}).get("duration_sec", "")
+                    out_merged.at[row_i, OUT_DURATION_COL] = _cell_str((out or {}).get("duration_sec", ""))
                     out_merged.at[row_i, OUT_LANGUAGE_COL] = str((out or {}).get("language", "")).strip()
-                    out_merged.at[row_i, OUT_ATTEMPTS_COL] = (out or {}).get("attempts", "")
+                    out_merged.at[row_i, OUT_ATTEMPTS_COL] = _cell_str((out or {}).get("attempts", ""))
                     out_merged.at[row_i, OUT_UPDATED_AT_COL] = time.strftime("%Y-%m-%d %H:%M:%S")
                 try:
                     reason = str((out or {}).get("reason", "")).lower()
