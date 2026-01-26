@@ -225,8 +225,9 @@ def _try_accept_cookies(driver) -> bool:
     Keeps it short to avoid slowing down runs.
     """
     js = r"""
+    // IMPORTANT: keep tokens specific. Do NOT include generic "ok" because it matches normal links (e.g. "Okfun").
     const ACCEPT = [
-      "accept", "agree", "ok", "got it", "allow", "consent",
+      "accept", "agree", "got it", "consent",
       "accetta", "accetto", "consenti", "va bene", "ho capito",
       "aceptar", "acepto",
       "j'accepte", "accepter",
@@ -234,6 +235,7 @@ def _try_accept_cookies(driver) -> bool:
       "aceitar",
       "รับ", "同意", "允许"
     ];
+    const COOKIE_CTX = ["cookie", "consent", "gdpr", "privacy", "cmp"];
     function norm(s){ return (s||"").trim().toLowerCase(); }
     function isVisible(el){
       if (!el) return false;
@@ -244,17 +246,37 @@ def _try_accept_cookies(driver) -> bool:
       if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
       return true;
     }
-    const candidates = [];
-    document.querySelectorAll("button, a, input[type='button'], input[type='submit']").forEach(el => candidates.push(el));
+    function inCookieContext(el) {
+      if (!el) return false;
+      // Prefer restricting to cookie/consent containers to avoid clicking normal page links.
+      const container = el.closest(
+        "[id*='cookie' i], [class*='cookie' i], [id*='consent' i], [class*='consent' i], " +
+        "[id*='gdpr' i], [class*='gdpr' i], [id*='privacy' i], [class*='privacy' i], " +
+        "[role='dialog'], [aria-modal='true']"
+      );
+      if (!container) return false;
+      const ctx = norm((container.id||"") + " " + (container.className||"") + " " + (container.getAttribute("aria-label")||""));
+      return COOKIE_CTX.some(t => ctx.includes(t));
+    }
+
+    // Search only inside likely cookie/consent contexts first.
+    let candidates = [];
+    document.querySelectorAll(
+      "[id*='cookie' i], [class*='cookie' i], [id*='consent' i], [class*='consent' i], " +
+      "[id*='gdpr' i], [class*='gdpr' i], [id*='privacy' i], [class*='privacy' i], " +
+      "[role='dialog'][aria-modal='true']"
+    ).forEach(container => {
+      container.querySelectorAll("button, a, input[type='button'], input[type='submit']").forEach(el => candidates.push(el));
+    });
+    // If none found, do not click anything (safer than guessing).
+    if (!candidates.length) return false;
+
     for (const el of candidates) {
       if (!isVisible(el)) continue;
       const txt = norm(el.innerText || el.textContent || el.value || "");
       if (!txt) continue;
       if (!ACCEPT.some(t => txt === t || txt.includes(t))) continue;
-      const ctx = norm((el.id||"") + " " + (el.className||"") + " " + (el.getAttribute("aria-label")||""));
-      if (!(ctx.includes("cookie") || ctx.includes("consent") || ctx.includes("gdpr") || ctx.includes("privacy") || ctx.includes("cmp"))) {
-        // still allow, but lower priority
-      }
+      if (!inCookieContext(el)) continue;
       try { el.click(); return true; } catch(e) {}
       try { el.dispatchEvent(new MouseEvent("click",{bubbles:true,cancelable:true})); return true; } catch(e) {}
     }
