@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 import html
 import re
+import os
 from typing import Dict, Any, Tuple, Optional
 from urllib.parse import urlparse
 
@@ -745,6 +746,22 @@ def process_job(
     # Best-effort: dismiss cookie banners early (can hide comment form).
     _try_accept_cookies(driver)
     _jump_to_comment_anchors(driver)
+
+    # If we got redirected to a different domain, do not attempt to comment there.
+    # This commonly happens on compromised sites or anti-bot redirects.
+    try:
+        cur_url = str(getattr(driver, "current_url", "") or "").strip()
+    except Exception:
+        cur_url = ""
+    try:
+        orig_host = (urlparse(url).netloc or "").split("@")[-1].lower()
+        cur_host = (urlparse(cur_url).netloc or "").split("@")[-1].lower()
+    except Exception:
+        orig_host, cur_host = "", ""
+    allow_cross = os.getenv("ALLOW_CROSS_DOMAIN_REDIRECT", "false").strip().lower() in {"1", "true", "yes", "on"}
+    if cur_url and orig_host and cur_host and cur_host != orig_host and not allow_cross:
+        return False, f"Redirected to different domain: {cur_host}", cur_url
+
     interstitial = _is_privacy_or_block_page(driver)
     if interstitial:
         return False, interstitial, ""
