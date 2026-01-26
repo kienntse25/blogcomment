@@ -1,6 +1,8 @@
 # src/celery_app.py
 import os
+import logging
 from celery import Celery
+from celery.signals import after_setup_logger
 from kombu import Exchange, Queue
 
 # Broker/Backend (đổi qua env trên VPS nếu cần)
@@ -41,3 +43,22 @@ celery.conf.update(
 
 # Đảm bảo tự động nạp module task khi worker khởi động
 celery.autodiscover_tasks(["src"])
+
+
+@after_setup_logger.connect
+def _tune_celery_logging(logger, *args, **kwargs):
+    """
+    Keep worker output readable at --loglevel=info by suppressing very noisy internal logs.
+    In particular, Celery can spam:
+      "Tasks flagged as revoked: <id>"
+    when many tasks are revoked by the pipeline.
+    """
+    for name in (
+        "celery.worker.state",   # "Tasks flagged as revoked ..."
+        "celery.worker.consumer.consumer",
+        "celery.worker.strategy",
+    ):
+        try:
+            logging.getLogger(name).setLevel(logging.WARNING)
+        except Exception:
+            pass
