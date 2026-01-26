@@ -704,6 +704,33 @@ def _detect_platform(html_text: str) -> str:
 
     return "unknown"
 
+def _extract_submit_error_message(html_text: str) -> str:
+    """
+    Best-effort extraction for common WordPress error pages/messages.
+    Returns a short, human-readable message or empty string.
+    """
+    t = html_text or ""
+    patterns = [
+        # wp_die error page
+        r'(?is)<div[^>]+id=["\']error-page["\'][^>]*>.*?<p[^>]*>(.*?)</p>',
+        r'(?is)<div[^>]+class=["\']wp-die-message["\'][^>]*>(.*?)</div>',
+        # classic WP comment error
+        r'(?is)<p[^>]*>\s*<strong>\s*error\s*</strong>\s*:\s*(.*?)</p>',
+        r'(?is)<p[^>]*>\s*<strong>\s*error\s*</strong>\s*([^<]+)</p>',
+        # generic notices
+        r'(?is)<div[^>]+class=["\'][^"\']*(?:error|notice|alert)[^"\']*["\'][^>]*>(.*?)</div>',
+    ]
+    for pat in patterns:
+        m = re.search(pat, t)
+        if not m:
+            continue
+        msg = m.group(1) if m.lastindex else ""
+        msg = html.unescape(_TAG_RE.sub(" ", msg))
+        msg = re.sub(r"\s+", " ", msg).strip()
+        if msg:
+            return msg[:240]
+    return ""
+
 def _build_comment_text(base_text: str, anchor: str, website: str) -> str:
     base = (base_text or "").strip()
     atext = (anchor or "").strip()
@@ -967,6 +994,8 @@ def process_job(
         "duplicate comment", "spam", "forbidden", "access denied",
         "please fill", "required field", "captcha", "recaptcha", "hcaptcha",
         "must be logged in",
+        "comments are closed",
+        "you are posting comments too quickly",
     ]
     if any(h in html_after for h in error_hints):
         # Some pages include generic "error" text; try to surface a more specific reason.
@@ -976,7 +1005,17 @@ def process_job(
             return False, "Login required", ""
         if "duplicate comment" in html_after:
             return False, "Duplicate comment", ""
-        return False, "Submit error", ""
+        if "comments are closed" in html_after:
+            return False, "Comments are closed", ""
+        if "you are posting comments too quickly" in html_after:
+            return False, "Rate limited (posting too quickly)", ""
+        # Try to extract WP error text from the full (non-lowercased) HTML.
+        try:
+            full_html = driver.page_source or ""
+        except Exception:
+            full_html = ""
+        msg = _extract_submit_error_message(full_html)
+        return False, msg or "Submit error", ""
 
     success_hints = [
         "comment submitted", "awaiting moderation", "awaiting approval",
