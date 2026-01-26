@@ -982,40 +982,13 @@ def process_job(
             except Exception:
                 return False, "No submit button/form", ""
 
-    # Kiểm tra dấu hiệu thành công
+    # Kiểm tra dấu hiệu thành công / lỗi sau submit
     driver.switch_to.default_content()
     try:
-        html_after = (driver.page_source or "").lower()
+        full_html = driver.page_source or ""
     except Exception:
-        html_after = ""
-
-    error_hints = [
-        "error:", "there was an error", "could not be posted", "cannot be posted",
-        "duplicate comment", "spam", "forbidden", "access denied",
-        "please fill", "required field", "captcha", "recaptcha", "hcaptcha",
-        "must be logged in",
-        "comments are closed",
-        "you are posting comments too quickly",
-    ]
-    if any(h in html_after for h in error_hints):
-        # Some pages include generic "error" text; try to surface a more specific reason.
-        if "captcha" in html_after or "recaptcha" in html_after or "hcaptcha" in html_after:
-            return False, "Captcha present", ""
-        if "must be logged in" in html_after:
-            return False, "Login required", ""
-        if "duplicate comment" in html_after:
-            return False, "Duplicate comment", ""
-        if "comments are closed" in html_after:
-            return False, "Comments are closed", ""
-        if "you are posting comments too quickly" in html_after:
-            return False, "Rate limited (posting too quickly)", ""
-        # Try to extract WP error text from the full (non-lowercased) HTML.
-        try:
-            full_html = driver.page_source or ""
-        except Exception:
-            full_html = ""
-        msg = _extract_submit_error_message(full_html)
-        return False, msg or "Submit error", ""
+        full_html = ""
+    html_after = full_html.lower()
 
     success_hints = [
         "comment submitted", "awaiting moderation", "awaiting approval",
@@ -1032,6 +1005,34 @@ def process_job(
         except Exception:
             pass
         return True, "Submitted (maybe pending moderation)", link
+
+    # WordPress/common failure hints (must be specific; do not match normal form text like "Required fields are marked").
+    if "duplicate comment" in html_after:
+        return False, "Duplicate comment", ""
+    if "comments are closed" in html_after:
+        return False, "Comments are closed", ""
+    if "you are posting comments too quickly" in html_after:
+        return False, "Rate limited (posting too quickly)", ""
+    if "must be logged in" in html_after:
+        return False, "Login required", ""
+    if "captcha" in html_after or "recaptcha" in html_after or "hcaptcha" in html_after:
+        return False, "Captcha present", ""
+
+    # Extract explicit WP error pages/messages (wp_die / ERROR: ...)
+    msg = _extract_submit_error_message(full_html)
+    if msg:
+        # Common WP message for missing required fields:
+        if "please fill the required fields" in msg.lower() or "please enter your" in msg.lower():
+            return False, "Missing required fields", ""
+        return False, msg, ""
+
+    # Generic error hints (keep conservative)
+    error_hints = [
+        "error:", "there was an error", "could not be posted", "cannot be posted",
+        "forbidden", "access denied",
+    ]
+    if any(h in html_after for h in error_hints):
+        return False, "Submit error", ""
 
     # Best-effort: some sites redirect without rendering a success message.
     try:
