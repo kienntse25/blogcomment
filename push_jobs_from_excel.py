@@ -487,9 +487,9 @@ def main():
                         out_merged.at[row_i, OUT_STATUS_COL] = "FAILED"
                         out_merged.at[row_i, OUT_REASON_COL] = out["reason"]
                         out_merged.at[row_i, OUT_COMMENT_LINK_COL] = ""
-                        out_merged.at[row_i, OUT_DURATION_COL] = out.get("duration_sec", "")
+                        out_merged.at[row_i, OUT_DURATION_COL] = _cell_str(out.get("duration_sec", ""))
                         out_merged.at[row_i, OUT_LANGUAGE_COL] = out.get("language", "")
-                        out_merged.at[row_i, OUT_ATTEMPTS_COL] = out.get("attempts", "")
+                        out_merged.at[row_i, OUT_ATTEMPTS_COL] = _cell_str(out.get("attempts", ""))
                         out_merged.at[row_i, OUT_UPDATED_AT_COL] = time.strftime("%Y-%m-%d %H:%M:%S")
                     try:
                         # Best-effort: ask Celery to drop it (may already be running).

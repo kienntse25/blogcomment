@@ -4,6 +4,7 @@ import time
 import html
 import re
 import os
+import random
 from typing import Dict, Any, Tuple, Optional
 from urllib.parse import urlparse
 
@@ -1025,6 +1026,7 @@ def process_job(
         anchor = ""
         website = ""
 
+    nav_started_at = time.time()
     try:
         driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
     except Exception:
@@ -1057,8 +1059,16 @@ def process_job(
         cur_host = (urlparse(cur_url).netloc or "").split("@")[-1].lower()
     except Exception:
         orig_host, cur_host = "", ""
+    def _same_host_or_www(a: str, b: str) -> bool:
+        if not a or not b:
+            return False
+        if a == b:
+            return True
+        if a == f"www.{b}" or b == f"www.{a}":
+            return True
+        return False
     allow_cross = os.getenv("ALLOW_CROSS_DOMAIN_REDIRECT", "false").strip().lower() in {"1", "true", "yes", "on"}
-    if cur_url and orig_host and cur_host and cur_host != orig_host and not allow_cross:
+    if cur_url and orig_host and cur_host and (not _same_host_or_www(orig_host, cur_host)) and not allow_cross:
         return False, f"Redirected to different domain: {cur_host}", cur_url
 
     interstitial = _is_privacy_or_block_page(driver)
@@ -1203,6 +1213,26 @@ def process_job(
         _set_val(driver, urlf, website)
 
     # Submit: prefer submit inside the same form as textarea (avoid random buttons)
+    # Optional anti-spam: many sites reject comments submitted "too quickly" after page load.
+    try:
+        min_delay = float(os.getenv("MIN_SUBMIT_DELAY_SEC", "0") or "0")
+    except Exception:
+        min_delay = 0.0
+    if min_delay > 0:
+        try:
+            now = time.time()
+            jitter = 0.0
+            try:
+                jitter = float(os.getenv("SUBMIT_DELAY_JITTER_SEC", "0.4") or "0.4")
+            except Exception:
+                jitter = 0.4
+            waited = max(0.0, now - nav_started_at)
+            remain = max(0.0, min_delay - waited)
+            if remain > 0:
+                time.sleep(remain + (random.random() * max(0.0, jitter)))
+        except Exception:
+            pass
+
     btn = None
     if form_el is not None:
         btn = _find_submit_in_form(driver, form_el)

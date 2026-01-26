@@ -539,6 +539,7 @@ def _should_retry(reason: str) -> bool:
         "tls/privacy error",
         "not found (404)",
         "invalid url",
+        "403",
         "third-party",
         "requires login",
         "remote disconnected",
