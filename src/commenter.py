@@ -17,6 +17,7 @@ from selenium.common.exceptions import (
     WebDriverException,
     ElementClickInterceptedException,
     InvalidSessionIdException,
+    UnexpectedAlertPresentException,
 )
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -682,6 +683,91 @@ def _verify_posted_comment_http(driver, url: str, name: str, comment_text: str) 
         return f"{base}#comment-{m.group(1)}"
     return f"{base}#comments"
 
+def _is_rating_required_alert(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    tokens = (
+        "select a rating",
+        "please select a rating",
+        "rating is required",
+        "seleziona",  # IT
+        "valutazione",  # IT
+        "bewertung",  # DE
+        "評価",  # JA
+    )
+    return any(tok in t for tok in tokens)
+
+def _try_set_required_ratings(driver, form_el) -> bool:
+    """
+    Some WP plugins (e.g. WP Recipe Maker) require a rating before submit and will
+    show a JS alert like "Please select a rating".
+    This tries to set a non-zero rating inside the same comment form.
+    """
+    if form_el is None:
+        return False
+    js = r"""
+    const form = arguments[0];
+    if (!form) return false;
+    let changed = false;
+    function click(el){
+      try { el.click(); } catch(e) {}
+      try { el.dispatchEvent(new MouseEvent("click",{bubbles:true,cancelable:true})); } catch(e) {}
+      try { el.dispatchEvent(new Event("change",{bubbles:true})); } catch(e) {}
+    }
+    // Radio-based ratings
+    const radios = Array.from(form.querySelectorAll("input[type='radio'][name]"));
+    const groups = new Map();
+    for (const r of radios) {
+      const n = (r.name || "").toLowerCase();
+      if (!n) continue;
+      if (!(n.includes("rating") || n.includes("rate"))) continue;
+      if (!groups.has(r.name)) groups.set(r.name, []);
+      groups.get(r.name).push(r);
+    }
+    for (const [name, items] of groups.entries()) {
+      // pick highest numeric value > 0
+      let best = null;
+      let bestV = -1;
+      for (const it of items) {
+        const v = parseInt(it.value || "0", 10);
+        if (Number.isFinite(v) && v > bestV) { bestV = v; best = it; }
+      }
+      if (best && bestV > 0) {
+        if (!best.checked) {
+          best.checked = true;
+          click(best);
+          changed = true;
+        }
+      }
+    }
+    // Select-based ratings
+    const selects = Array.from(form.querySelectorAll("select[name]"));
+    for (const s of selects) {
+      const n = (s.name || "").toLowerCase();
+      if (!(n.includes("rating") || n.includes("rate"))) continue;
+      const opts = Array.from(s.options || []);
+      let bestIdx = -1;
+      let bestV = -1;
+      for (let i = 0; i < opts.length; i++) {
+        const ov = parseInt(opts[i].value || "0", 10);
+        if (Number.isFinite(ov) && ov > bestV) { bestV = ov; bestIdx = i; }
+      }
+      if (bestIdx >= 0 && bestV > 0 && s.selectedIndex !== bestIdx) {
+        s.selectedIndex = bestIdx;
+        try { s.dispatchEvent(new Event("change",{bubbles:true})); } catch(e) {}
+        changed = true;
+      }
+    }
+    return changed;
+    """
+    try:
+        return bool(driver.execute_script(js, form_el))
+    except InvalidSessionIdException:
+        raise
+    except Exception:
+        return False
+
 
 def _coerce_iframe_index(value) -> Optional[int]:
     if value is None:
@@ -1055,6 +1141,13 @@ def process_job(
     text_to_send = _build_comment_text(content, anchor, website)
     _set_val(driver, ta, text_to_send)
 
+    # Some plugins require rating selection; set it before submit to avoid alerts.
+    try:
+        if _try_set_required_ratings(driver, form_el):
+            time.sleep(0.1)
+    except Exception:
+        pass
+
     # Điền các field tùy chọn
     # Name - sử dụng comprehensive selectors từ form_selectors.py
     nm = None
@@ -1114,10 +1207,37 @@ def process_job(
     if form_el is not None:
         btn = _find_submit_in_form(driver, form_el)
     if btn:
-        ok, why = _safe_click(driver, btn, "submit")
-        if not ok:
-            return False, why, ""
-        time.sleep(AFTER_SUBMIT_PAUSE)
+        try:
+            ok, why = _safe_click(driver, btn, "submit")
+            if not ok:
+                return False, why, ""
+            time.sleep(AFTER_SUBMIT_PAUSE)
+        except UnexpectedAlertPresentException:
+            # Try to resolve common rating-required alerts quickly.
+            try:
+                alert = driver.switch_to.alert
+                atxt = alert.text or ""
+                alert.accept()
+            except Exception:
+                atxt = ""
+            if _is_rating_required_alert(atxt):
+                try:
+                    if not _switch_to_frame(driver, ta_ifr):
+                        return False, "Rating required (cannot access form)", ""
+                    form_el2 = _closest_form(driver, ta)
+                    _try_set_required_ratings(driver, form_el2)
+                    btn_retry = _find_submit_in_form(driver, form_el2) if form_el2 is not None else None
+                    if btn_retry:
+                        ok2, why2 = _safe_click(driver, btn_retry, "submit")
+                        if not ok2:
+                            return False, why2, ""
+                        time.sleep(AFTER_SUBMIT_PAUSE)
+                    else:
+                        return False, "Rating required (no submit after setting)", ""
+                except Exception:
+                    return False, "Rating required", ""
+            else:
+                return False, f"Unexpected alert: {atxt}".strip(), ""
     else:
         # Fallback: try strict submit selectors (global) or form.submit()
         driver.switch_to.default_content()
@@ -1147,12 +1267,28 @@ def process_job(
                 return False, "No submit button/form", ""
 
     # Kiểm tra dấu hiệu thành công / lỗi sau submit
-    driver.switch_to.default_content()
+    try:
+        driver.switch_to.default_content()
+    except UnexpectedAlertPresentException:
+        try:
+            alert = driver.switch_to.alert
+            atxt = alert.text or ""
+            alert.accept()
+        except Exception:
+            atxt = ""
+        if _is_rating_required_alert(atxt):
+            return False, "Rating required", ""
+        return False, f"Unexpected alert: {atxt}".strip(), ""
     try:
         full_html = driver.page_source or ""
     except Exception:
         full_html = ""
     html_after = full_html.lower()
+    cur_after = ""
+    try:
+        cur_after = (driver.current_url or "").strip()
+    except Exception:
+        cur_after = ""
 
     success_hints = [
         "comment submitted", "awaiting moderation", "awaiting approval",
@@ -1192,7 +1328,12 @@ def process_job(
     if msg:
         if _is_rate_limit_message(msg):
             # Some sites still accept the comment but show a "too quickly" warning.
-            verified_http = _verify_posted_comment_http(driver, url=cur_after or url, name=name, comment_text=text_to_send)
+            verified_http = _verify_posted_comment_http(
+                driver,
+                url=cur_after or url,
+                name=name,
+                comment_text=text_to_send,
+            )
             if verified_http:
                 return True, "Submitted (verified-http)", verified_http
             return False, "Rate limited (posting too quickly)", ""
@@ -1207,16 +1348,17 @@ def process_job(
         "forbidden", "access denied",
     ]
     if any(h in html_after for h in error_hints):
-        verified_http = _verify_posted_comment_http(driver, url=cur_after or url, name=name, comment_text=text_to_send)
+        verified_http = _verify_posted_comment_http(
+            driver,
+            url=cur_after or url,
+            name=name,
+            comment_text=text_to_send,
+        )
         if verified_http:
             return True, "Submitted (verified-http)", verified_http
         return False, "Submit error", ""
 
     # Best-effort: some sites redirect without rendering a success message.
-    try:
-        cur_after = (driver.current_url or "").strip()
-    except Exception:
-        cur_after = ""
     if cur_after and cur_after != url:
         return True, "Submitted (unverified)", cur_after
     return True, "Submitted (unverified)", ""
