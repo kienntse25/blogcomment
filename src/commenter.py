@@ -8,6 +8,7 @@ from typing import Dict, Any, Tuple, Optional
 from urllib.parse import urlparse
 
 from langdetect import detect, DetectorFactory
+import requests
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import (
@@ -34,6 +35,30 @@ DetectorFactory.seed = 0
 _TAG_RE = re.compile(r"<[^>]+>")
 
 # ---------------- Helpers ----------------
+
+def _norm_ws(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "")).strip()
+
+def _is_rate_limit_message(msg: str) -> bool:
+    m = (msg or "").strip().lower()
+    if not m:
+        return False
+    # Common WP/anti-spam "posting too quickly" messages in multiple languages.
+    tokens = (
+        "too quickly",
+        "posting comments too quickly",
+        "please slow down",
+        "slow down",
+        "zu schnell",          # DE
+        "bitte etwas langsamer",  # DE
+        "trop vite",           # FR
+        "trop rapidement",     # FR
+        "demasiado rápido",    # ES
+        "muy rápido",          # ES
+        "quá nhanh",           # VI
+        "hãy chậm lại",        # VI
+    )
+    return any(t in m for t in tokens)
 
 def _is_privacy_or_block_page(driver) -> Optional[str]:
     """
@@ -517,6 +542,145 @@ def _find_submit_in_form(driver, form_el) -> Optional[object]:
         raise
     except Exception:
         return None
+
+def _verify_posted_comment(driver, name: str, comment_text: str) -> str:
+    """
+    Best-effort verification: try to find the posted comment in the DOM.
+    Returns a permalink (or empty string if not found).
+    """
+    name_norm = _norm_ws(name).lower()
+    content_norm = _norm_ws(comment_text)
+    if not name_norm or not content_norm:
+        return ""
+    snippet = _norm_ws(content_norm[:80]).lower()
+    if len(snippet) < 12:
+        return ""
+
+    js = r"""
+    const name = (arguments[0] || "").toLowerCase();
+    const snippet = (arguments[1] || "").toLowerCase();
+    function norm(s){ return (s||"").replace(/\s+/g," ").trim(); }
+    function txt(el){ return norm(el ? (el.innerText || el.textContent || "") : ""); }
+    function has(h, needle){ return h && needle && h.toLowerCase().includes(needle.toLowerCase()); }
+    function inForm(el){
+      return !!(el && el.closest && el.closest("#respond, #commentform, form.comment-form, form#commentform, .comment-respond"));
+    }
+    const selectors = [
+      "#comments .comment",
+      ".comments-area .comment",
+      "ol.commentlist > li",
+      ".comment-list > li",
+      "article.comment",
+      "li.comment"
+    ];
+    let nodes = [];
+    for (const sel of selectors) {
+      try { nodes.push(...document.querySelectorAll(sel)); } catch(e) {}
+    }
+    // de-dup
+    nodes = Array.from(new Set(nodes));
+    if (!nodes.length) return "";
+    const tail = nodes.slice(-20);
+    for (let i = tail.length - 1; i >= 0; i--) {
+      const el = tail[i];
+      if (!el || inForm(el)) continue;
+      const t = txt(el);
+      if (!t) continue;
+      if (!has(t, name)) continue;
+      if (!has(t, snippet)) continue;
+      const id = (el.getAttribute("id") || "");
+      if (id && id.toLowerCase().startsWith("comment-")) {
+        return "#" + id;
+      }
+      // Some themes put the ID on an inner wrapper
+      const inner = el.querySelector?.("[id^='comment-']");
+      if (inner) {
+        const iid = inner.getAttribute("id") || "";
+        if (iid) return "#" + iid;
+      }
+      return "#comments";
+    }
+    return "";
+    """
+    try:
+        frag = driver.execute_script(js, name_norm, snippet)
+        frag = str(frag or "").strip()
+    except Exception:
+        frag = ""
+    if not frag:
+        return ""
+    try:
+        base = (driver.current_url or "").split("#", 1)[0]
+    except Exception:
+        base = ""
+    if base:
+        return base + frag
+    return frag
+
+def _verify_posted_comment_http(driver, url: str, name: str, comment_text: str) -> str:
+    """
+    Verify by fetching the page HTML directly (no JS rendering).
+    Only intended as a fallback when Selenium DOM doesn't show the new comment.
+    Uses cookies from Selenium session to reduce false negatives.
+    Returns a permalink (or empty string if not found).
+    """
+    try:
+        enabled = os.getenv("VERIFY_HTTP_ON_FAIL", "true").strip().lower() in {"1", "true", "yes", "on"}
+    except Exception:
+        enabled = True
+    if not enabled:
+        return ""
+
+    name_norm = _norm_ws(name).lower()
+    content_norm = _norm_ws(comment_text)
+    snippet = _norm_ws(content_norm[:120]).lower()
+    if not name_norm or len(snippet) < 12:
+        return ""
+
+    sess = requests.Session()
+    try:
+        for c in (driver.get_cookies() or []):
+            n = c.get("name")
+            v = c.get("value")
+            if not n:
+                continue
+            sess.cookies.set(n, v)
+    except Exception:
+        pass
+
+    headers = {}
+    try:
+        ua = os.getenv("USER_AGENT", "").strip()
+        if ua:
+            headers["User-Agent"] = ua
+    except Exception:
+        pass
+
+    timeout = float(os.getenv("VERIFY_HTTP_TIMEOUT", "6"))
+    try:
+        r = sess.get(url, headers=headers or None, timeout=timeout, allow_redirects=True)
+    except Exception:
+        return ""
+
+    try:
+        html_txt = r.text or ""
+    except Exception:
+        return ""
+    low = html_txt.lower()
+    pos = low.rfind(snippet)
+    if pos < 0:
+        return ""
+    window = low[max(0, pos - 1200): pos + 1200]
+    if name_norm not in window:
+        return ""
+
+    # Try to extract comment id near the match for a stable permalink.
+    chunk = html_txt[max(0, pos - 2500): pos + 2500]
+    m = re.search(r"""id\s*=\s*["']comment-(\d+)["']""", chunk, flags=re.IGNORECASE)
+    base = (r.url or url).split("#", 1)[0]
+    if m:
+        return f"{base}#comment-{m.group(1)}"
+    return f"{base}#comments"
 
 
 def _coerce_iframe_index(value) -> Optional[int]:
@@ -1006,6 +1170,11 @@ def process_job(
             pass
         return True, "Submitted (maybe pending moderation)", link
 
+    # Verify actual posted comment (when the page doesn't show a clear success message).
+    verified_link = _verify_posted_comment(driver, name=name, comment_text=text_to_send)
+    if verified_link:
+        return True, "Submitted (verified)", verified_link
+
     # WordPress/common failure hints (must be specific; do not match normal form text like "Required fields are marked").
     if "duplicate comment" in html_after:
         return False, "Duplicate comment", ""
@@ -1021,6 +1190,12 @@ def process_job(
     # Extract explicit WP error pages/messages (wp_die / ERROR: ...)
     msg = _extract_submit_error_message(full_html)
     if msg:
+        if _is_rate_limit_message(msg):
+            # Some sites still accept the comment but show a "too quickly" warning.
+            verified_http = _verify_posted_comment_http(driver, url=cur_after or url, name=name, comment_text=text_to_send)
+            if verified_http:
+                return True, "Submitted (verified-http)", verified_http
+            return False, "Rate limited (posting too quickly)", ""
         # Common WP message for missing required fields:
         if "please fill the required fields" in msg.lower() or "please enter your" in msg.lower():
             return False, "Missing required fields", ""
@@ -1032,6 +1207,9 @@ def process_job(
         "forbidden", "access denied",
     ]
     if any(h in html_after for h in error_hints):
+        verified_http = _verify_posted_comment_http(driver, url=cur_after or url, name=name, comment_text=text_to_send)
+        if verified_http:
+            return True, "Submitted (verified-http)", verified_http
         return False, "Submit error", ""
 
     # Best-effort: some sites redirect without rendering a success message.

@@ -517,6 +517,14 @@ def _should_retry(reason: str) -> bool:
     if not reason:
         return True
     reason_lower = reason.lower()
+    # Rate limiting is usually per-IP and short retries often cause duplicates or wasted attempts.
+    # Allow overriding if the user explicitly wants to retry rate-limited pages.
+    if "rate limited (posting too quickly)" in reason_lower or "posting too quickly" in reason_lower or "zu schnell" in reason_lower:
+        return os.getenv("RETRY_RATE_LIMIT", "false").strip().lower() in {"1", "true", "yes", "on"}
+    # Page load timeouts are very expensive to retry; default is to NOT retry.
+    # You can override by setting RETRY_PAGELOAD_TIMEOUT=true.
+    if "page load timeout" in reason_lower:
+        return os.getenv("RETRY_PAGELOAD_TIMEOUT", "false").strip().lower() in {"1", "true", "yes", "on"}
     # DNS failures can be proxy-specific. If we have multiple proxies, allow a retry to pick a new one.
     if any(tok in reason_lower for tok in ("dns error", "dns not resolved", "name or service not known")):
         try:
