@@ -8,7 +8,7 @@ usage() {
   cat <<'EOF'
 Usage:
   bash scripts/vps.sh worker [--concurrency N] [--queues Q1,Q2] [--loglevel info] [--pool prefork|threads|solo] [--pageload SEC] [--find-timeout SEC] [--comment-wait SEC]
-  bash scripts/vps.sh run --input PATH --output PATH [--queue NAME] [--timeout SEC] [--flush-every N] [--resume-ok] [--no-anchor]
+  bash scripts/vps.sh run --input PATH --output PATH [--queue NAME] [--timeout SEC] [--limit N] [--flush-every N] [--resume-ok] [--no-anchor]
   bash scripts/vps.sh prefill --input PATH [--flush-every N] [--overwrite]
   bash scripts/vps.sh clean --output PATH
   bash scripts/vps.sh purge --queues Q1,Q2 [--db N] [--flushdb]
@@ -97,6 +97,7 @@ case "${cmd}" in
     output=""
     queue="${CELERY_QUEUE:-}"
     timeout="${PAGELOAD_TIMEOUT:-}"
+    limit="${PUSH_LIMIT:-0}"
     flush_every="${PUSH_FLUSH_EVERY:-}"
     resume_ok=0
     no_anchor=0
@@ -107,6 +108,7 @@ case "${cmd}" in
         --output) output="$2"; shift 2 ;;
         --queue) queue="$2"; shift 2 ;;
         --timeout) timeout="$2"; shift 2 ;;
+        --limit) limit="$2"; shift 2 ;;
         --flush-every) flush_every="$2"; shift 2 ;;
         --resume-ok) resume_ok=1; shift 1 ;;
         --no-anchor) no_anchor=1; shift 1 ;;
@@ -138,7 +140,7 @@ case "${cmd}" in
         export PUSH_JOBS_LOG="logs/push_jobs_${out_stem}.log"
       fi
     fi
-    args=(--input "${input}" --output "${output}" --limit 0)
+    args=(--input "${input}" --output "${output}" --limit "${limit}")
     if [[ -n "${queue}" ]]; then
       args+=(--queue "${queue}")
     fi

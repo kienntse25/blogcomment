@@ -100,7 +100,30 @@ def _save_fail_artifacts(driver, url: str, reason: str) -> dict[str, str]:
     except Exception:
         pass
     try:
-        Path(metap).write_text(f"url={url}\nreason={reason}\n", encoding="utf-8", errors="ignore")
+        cur_url = ""
+        title = ""
+        src_len = ""
+        try:
+            cur_url = str(getattr(driver, "current_url", "") or "")
+        except Exception:
+            cur_url = ""
+        try:
+            title = str(getattr(driver, "title", "") or "")
+        except Exception:
+            title = ""
+        try:
+            src_len = str(len(getattr(driver, "page_source", "") or ""))
+        except Exception:
+            src_len = ""
+
+        meta_txt = (
+            f"url={url}\n"
+            f"current_url={cur_url}\n"
+            f"title={title}\n"
+            f"page_source_len={src_len}\n"
+            f"reason={reason}\n"
+        )
+        Path(metap).write_text(meta_txt, encoding="utf-8", errors="ignore")
         out["meta"] = metap
     except Exception:
         pass
