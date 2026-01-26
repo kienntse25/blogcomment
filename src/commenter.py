@@ -1319,6 +1319,22 @@ def process_job(
         cur_after = (driver.current_url or "").strip()
     except Exception:
         cur_after = ""
+    try:
+        title_after = (driver.title or "").strip()
+    except Exception:
+        title_after = ""
+
+    # Explicit HTTP block pages (common on wp-comments-post.php)
+    title_low = title_after.lower()
+    if "403" in title_low or "forbidden" in title_low:
+        if "wp-comments-post.php" in (cur_after or "").lower():
+            return False, "403 Forbidden (submit blocked)", ""
+        if "403" in title_low:
+            return False, "403 Forbidden", ""
+    if "wp-comments-post.php" in (cur_after or "").lower():
+        # Some servers return a minimal 403 page without setting a descriptive title.
+        if "403 forbidden" in html_after or "access is forbidden" in html_after:
+            return False, "403 Forbidden (submit blocked)", ""
 
     success_hints = [
         "comment submitted", "awaiting moderation", "awaiting approval",
