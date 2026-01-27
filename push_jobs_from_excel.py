@@ -501,36 +501,33 @@ def main():
             j, ar, sent_at = pending[i]
             # Hard per-task timeout: prevents the whole run from "stopping" because a task is stuck forever.
             if args.task_timeout and args.task_timeout > 0 and not ar.ready():
-                revoke_on_timeout = os.getenv("REVOKE_ON_TIMEOUT", "true").strip().lower() in {"1", "true", "yes", "on"}
+                # IMPORTANT:
+                # Default is *not* to revoke/timeout tasks, because with Celery (without track_started)
+                # task state often stays PENDING until completion. Timing out PENDING tasks would
+                # incorrectly mark thousands of queued jobs as FAILED in a few minutes.
+                revoke_on_timeout = os.getenv("REVOKE_ON_TIMEOUT", "false").strip().lower() in {"1", "true", "yes", "on"}
                 age = time.time() - sent_at
                 # Avoid mass-revokes when the queue is backlogged: allow extra grace time for tasks that
                 # haven't even started yet (state often stays PENDING until completion unless track_started is enabled).
                 queue_grace = float(os.getenv("QUEUE_GRACE_SEC", "90") or "90")
-                # If revoke_on_timeout is disabled, we also avoid marking the row as FAILED early.
-                # This keeps output accurate (tasks can still finish later), at the cost of waiting longer.
-                hard_timeout = float(os.getenv("HARD_TASK_TIMEOUT_SEC", "0") or "0")
                 try:
                     state = str(getattr(ar, "state", "") or "").upper()
                 except Exception:
                     state = ""
-                threshold = float(args.task_timeout)
-                if state in {"PENDING", ""}:
-                    threshold = threshold + max(0.0, queue_grace)
-
-                effective_threshold = threshold
                 if not revoke_on_timeout:
-                    # Only enforce timeout if a hard ceiling is configured.
-                    if hard_timeout and hard_timeout > 0:
-                        effective_threshold = hard_timeout
-                    else:
-                        effective_threshold = 0.0
+                    effective_threshold = 0.0
+                else:
+                    threshold = float(args.task_timeout)
+                    if state in {"PENDING", ""}:
+                        threshold = threshold + max(0.0, queue_grace)
+                    effective_threshold = threshold
 
                 if effective_threshold > 0 and age >= effective_threshold:
                     row_i = int(j.get("__row", -1))
                     out = {
                         "url": j.get("url", ""),
                         "status": "FAILED",
-                        "reason": f"No result/timeout after {int(age)}s",
+                        "reason": f"No result/timeout after {int(age)}s (state={state or 'unknown'})",
                         "comment_link": "",
                         "duration_sec": 0.0,
                         "language": "unknown",

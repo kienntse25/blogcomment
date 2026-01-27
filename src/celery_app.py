@@ -56,6 +56,8 @@ def _tune_celery_logging(logger, *args, **kwargs):
     for name in (
         "celery.worker.state",   # "Tasks flagged as revoked ..."
         "celery.worker.consumer.consumer",
+        "celery.worker.request",  # "Discarding revoked task ..."
+        "celery.worker.consumer",  # some versions log revoke/discard here
         "celery.worker.strategy",
     ):
         try:
