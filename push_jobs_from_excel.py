@@ -42,6 +42,31 @@ def _cell_str(value) -> str:
         return ""
     return str(value)
 
+def _ensure_out_columns_object_dtype(out_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Some Pandas versions/configs may infer StringDtype for new string columns.
+    Assigning floats/ints into such columns can raise TypeError.
+    To keep the pipeline resilient, force all extra output columns to object dtype.
+    """
+    for col in OUT_EXTRA_COLUMNS:
+        if col not in out_df.columns:
+            out_df[col] = pd.Series([""] * len(out_df), dtype="object")
+        else:
+            try:
+                out_df[col] = out_df[col].astype("object")
+            except Exception:
+                pass
+    return out_df
+
+def _write_excel_safe(df: pd.DataFrame, path: str) -> None:
+    """
+    Best-effort atomic write (write temp then replace) to avoid corrupted/half-written xlsx on crash.
+    """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.tmp"
+    df.to_excel(tmp, index=False)
+    os.replace(tmp, path)
+
 # Đọc Excel (đảm bảo tồn tại)
 def _read_df(path, sheet_name=None):
     if not os.path.exists(path):
@@ -343,14 +368,14 @@ def main():
         df = _read_df(args.input)
     except Exception as e:
         logging.error(f"Không thể đọc Excel: {e}")
-        pd.DataFrame(columns=REQUIRED_COLUMNS + OUT_EXTRA_COLUMNS).to_excel(args.output, index=False)
+        _write_excel_safe(pd.DataFrame(columns=REQUIRED_COLUMNS + OUT_EXTRA_COLUMNS), args.output)
         return
 
     # Bắt buộc header (chấp nhận alias, không phân biệt hoa thường/dấu)
     df, miss = _standardize_columns(df)
     if miss:
         logging.error(f"Thiếu cột {miss}. Yêu cầu header: {REQUIRED_COLUMNS}")
-        pd.DataFrame(columns=REQUIRED_COLUMNS + OUT_EXTRA_COLUMNS).to_excel(args.output, index=False)
+        _write_excel_safe(pd.DataFrame(columns=REQUIRED_COLUMNS + OUT_EXTRA_COLUMNS), args.output)
         return
 
     done_ok: set[str] = set()
@@ -367,10 +392,10 @@ def main():
             out_merged[col] = ""
     if existing_out is not None:
         out_merged = _overlay_existing_into_output(out_merged, df, existing_out)
+    out_merged = _ensure_out_columns_object_dtype(out_merged)
     # Ensure output file exists early (helps monitoring progress on VPS).
     try:
-        os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
-        out_merged.to_excel(args.output, index=False)
+        _write_excel_safe(out_merged, args.output)
         logging.info(f"Initialized output file: {args.output} (rows={len(out_merged)})")
     except Exception as e:
         logging.warning(f"Không thể khởi tạo output sớm ({args.output}): {e}")
@@ -413,7 +438,7 @@ def main():
 
     if not jobs:
         logging.warning("Không có job hợp lệ.")
-        out_merged.to_excel(args.output, index=False)
+        _write_excel_safe(out_merged, args.output)
         return
 
     # Test nhanh 1 dòng (không Celery)
@@ -428,7 +453,7 @@ def main():
         out_merged.at[i, OUT_LANGUAGE_COL] = str(res.get("language", "")).strip()
         out_merged.at[i, OUT_ATTEMPTS_COL] = _cell_str(res.get("attempts", ""))
         out_merged.at[i, OUT_UPDATED_AT_COL] = time.strftime("%Y-%m-%d %H:%M:%S")
-        out_merged.to_excel(args.output, index=False)
+        _write_excel_safe(out_merged, args.output)
         logging.info(f"Đã ghi {args.output}")
         return
 
@@ -437,7 +462,7 @@ def main():
         from src.tasks import run_comment
     except Exception as e:
         logging.error(f"Import task lỗi: {e}")
-        pd.DataFrame(columns=RESULT_COLUMNS).to_excel(args.output, index=False)
+        _write_excel_safe(pd.DataFrame(columns=RESULT_COLUMNS), args.output)
         return
 
     tasks=[]
@@ -471,10 +496,14 @@ def main():
             j, ar, sent_at = pending[i]
             # Hard per-task timeout: prevents the whole run from "stopping" because a task is stuck forever.
             if args.task_timeout and args.task_timeout > 0 and not ar.ready():
+                revoke_on_timeout = os.getenv("REVOKE_ON_TIMEOUT", "true").strip().lower() in {"1", "true", "yes", "on"}
                 age = time.time() - sent_at
                 # Avoid mass-revokes when the queue is backlogged: allow extra grace time for tasks that
                 # haven't even started yet (state often stays PENDING until completion unless track_started is enabled).
                 queue_grace = float(os.getenv("QUEUE_GRACE_SEC", "90") or "90")
+                # If revoke_on_timeout is disabled, we also avoid marking the row as FAILED early.
+                # This keeps output accurate (tasks can still finish later), at the cost of waiting longer.
+                hard_timeout = float(os.getenv("HARD_TASK_TIMEOUT_SEC", "0") or "0")
                 try:
                     state = str(getattr(ar, "state", "") or "").upper()
                 except Exception:
@@ -483,7 +512,15 @@ def main():
                 if state in {"PENDING", ""}:
                     threshold = threshold + max(0.0, queue_grace)
 
-                if age >= threshold:
+                effective_threshold = threshold
+                if not revoke_on_timeout:
+                    # Only enforce timeout if a hard ceiling is configured.
+                    if hard_timeout and hard_timeout > 0:
+                        effective_threshold = hard_timeout
+                    else:
+                        effective_threshold = 0.0
+
+                if effective_threshold > 0 and age >= effective_threshold:
                     row_i = int(j.get("__row", -1))
                     out = {
                         "url": j.get("url", ""),
@@ -504,7 +541,7 @@ def main():
                         out_merged.at[row_i, OUT_UPDATED_AT_COL] = time.strftime("%Y-%m-%d %H:%M:%S")
                     try:
                         # Best-effort: ask Celery to drop it (may already be running).
-                        if os.getenv("REVOKE_ON_TIMEOUT", "true").strip().lower() in {"1", "true", "yes", "on"}:
+                        if revoke_on_timeout:
                             ar.revoke(terminate=False)
                     except Exception:
                         pass
@@ -513,7 +550,7 @@ def main():
                     progressed = True
                     finished += 1
                     if finished % flush_every == 0:
-                        out_merged.to_excel(args.output, index=False)
+                        _write_excel_safe(out_merged, args.output)
                         logging.info(f"Đã ghi tạm {args.output} (done={finished}).")
                     i -= 1
                     continue
@@ -546,13 +583,13 @@ def main():
                 progressed = True
                 finished += 1
                 if finished % flush_every == 0:
-                    out_merged.to_excel(args.output, index=False)
+                    _write_excel_safe(out_merged, args.output)
                     logging.info(f"Đã ghi tạm {args.output} (done={finished}).")
                     if timeout_rows:
-                        df.loc[sorted(timeout_rows), REQUIRED_COLUMNS].to_excel(timeouts_output, index=False)
+                        _write_excel_safe(df.loc[sorted(timeout_rows), REQUIRED_COLUMNS], timeouts_output)
                         logging.info(f"Đã ghi tạm {timeouts_output} ({len(timeout_rows)} dòng timeouts).")
                     if no_comment_rows:
-                        df.loc[sorted(no_comment_rows), REQUIRED_COLUMNS].to_excel(no_comment_output, index=False)
+                        _write_excel_safe(df.loc[sorted(no_comment_rows), REQUIRED_COLUMNS], no_comment_output)
                         logging.info(f"Đã ghi tạm {no_comment_output} ({len(no_comment_rows)} dòng no_comment).")
             i -= 1
 
@@ -570,14 +607,14 @@ def main():
             # Nếu quá lâu không có task nào xong, vẫn tiếp tục chờ (giữ tốc độ poll vừa phải)
             time.sleep(poll_interval)
 
-    out_merged.to_excel(args.output, index=False)
+    _write_excel_safe(out_merged, args.output)
     logging.info(f"Đã ghi {args.output} (total_rows={len(out_merged)}).")
 
     if timeout_rows:
-        df.loc[sorted(timeout_rows), REQUIRED_COLUMNS].to_excel(timeouts_output, index=False)
+        _write_excel_safe(df.loc[sorted(timeout_rows), REQUIRED_COLUMNS], timeouts_output)
         logging.info(f"Đã ghi {timeouts_output} ({len(timeout_rows)} dòng timeouts).")
     if no_comment_rows:
-        df.loc[sorted(no_comment_rows), REQUIRED_COLUMNS].to_excel(no_comment_output, index=False)
+        _write_excel_safe(df.loc[sorted(no_comment_rows), REQUIRED_COLUMNS], no_comment_output)
         logging.info(f"Đã ghi {no_comment_output} ({len(no_comment_rows)} dòng no_comment).")
 
 if __name__ == "__main__":
