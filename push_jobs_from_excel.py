@@ -63,7 +63,12 @@ def _write_excel_safe(df: pd.DataFrame, path: str) -> None:
     Best-effort atomic write (write temp then replace) to avoid corrupted/half-written xlsx on crash.
     """
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    tmp = f"{path}.tmp"
+    base, ext = os.path.splitext(path)
+    # Pandas chooses writer engine based on file extension; keep a valid Excel extension for temp file.
+    if not ext:
+        ext = ".xlsx"
+        path = f"{path}{ext}"
+    tmp = f"{base}.tmp{ext}"
     df.to_excel(tmp, index=False)
     os.replace(tmp, path)
 
