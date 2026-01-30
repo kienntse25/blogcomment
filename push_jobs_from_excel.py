@@ -514,11 +514,17 @@ def main():
                     state = str(getattr(ar, "state", "") or "").upper()
                 except Exception:
                     state = ""
+                # With task_track_started enabled on the worker, state becomes STARTED when the job is running.
+                # Without it, state may stay PENDING until completion.
+                timeout_pending = os.getenv("TIMEOUT_PENDING", "false").strip().lower() in {"1", "true", "yes", "on"}
                 if not revoke_on_timeout:
                     effective_threshold = 0.0
                 else:
                     threshold = float(args.task_timeout)
-                    if state in {"PENDING", ""}:
+                    # Never timeout queued jobs by default; it causes mass false FAIL when backlog exists.
+                    if state in {"PENDING", "", "RECEIVED"} and not timeout_pending:
+                        effective_threshold = 0.0
+                    elif state in {"PENDING", "", "RECEIVED"}:
                         threshold = threshold + max(0.0, queue_grace)
                     effective_threshold = threshold
 

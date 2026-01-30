@@ -96,7 +96,10 @@ case "${cmd}" in
     input=""
     output=""
     queue="${CELERY_QUEUE:-}"
-    timeout="${PAGELOAD_TIMEOUT:-}"
+    # IMPORTANT: do not default pipeline task-timeout from PAGELOAD_TIMEOUT.
+    # PAGELOAD_TIMEOUT is for the worker/browser. The pipeline timeout is optional and should be
+    # explicitly provided via --timeout or PUSH_TASK_TIMEOUT, otherwise it can "timeout" queued jobs.
+    timeout="${PUSH_TASK_TIMEOUT:-}"
     limit="${PUSH_LIMIT:-0}"
     flush_every="${PUSH_FLUSH_EVERY:-}"
     resume_ok=0
@@ -122,9 +125,6 @@ case "${cmd}" in
       usage
       exit 2
     fi
-    if [[ -n "${timeout}" ]]; then
-      export PAGELOAD_TIMEOUT="${timeout}"
-    fi
     # Default per-output log file (avoid interleaved push_jobs.log when running many campaigns).
     if [[ -z "${PUSH_JOBS_LOG:-}" ]]; then
       mkdir -p "${DIR}/logs" || true
@@ -146,6 +146,7 @@ case "${cmd}" in
     fi
     if [[ -n "${timeout}" ]]; then
       # Also enforce per-task timeout in the pipeline so one stuck URL doesn't block the whole run.
+      # Note: this is different from the worker's PAGELOAD_TIMEOUT.
       args+=(--task-timeout "${timeout}")
     fi
     if [[ -n "${flush_every}" ]]; then

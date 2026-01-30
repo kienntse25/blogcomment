@@ -21,6 +21,11 @@ celery.conf.update(
     timezone="Asia/Ho_Chi_Minh",
     enable_utc=False,
 
+    # Make task state observable (PENDING -> STARTED -> SUCCESS/FAILURE) in Redis backend.
+    # This allows the pipeline to apply timeouts only to tasks that actually started, avoiding
+    # mass "timeout" for queued tasks when the queue is backlogged.
+    task_track_started=True,
+
     # Queue mặc định
     task_default_queue="camp_a",
 
